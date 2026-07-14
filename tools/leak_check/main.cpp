@@ -38,11 +38,13 @@ int main(int argc, char** argv) {
                                      arguments.height, arguments.stride, arguments.format};
     for (std::uint32_t index = 0; index < arguments.warmup; ++index) run_cycle(files, image);
 
+    light_ocr::tools::release_unused_memory();
     const auto baseline = light_ocr::tools::resident_memory_bytes();
     std::vector<std::uint64_t> resident;
     resident.reserve(arguments.iterations);
     for (std::uint32_t index = 0; index < arguments.iterations; ++index) {
       run_cycle(files, image);
+      light_ocr::tools::release_unused_memory();
       resident.push_back(light_ocr::tools::resident_memory_bytes());
     }
     const auto minmax = std::minmax_element(resident.begin(), resident.end());

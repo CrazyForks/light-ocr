@@ -168,6 +168,8 @@ build/preset-release/bin/light_ocr_leak_check \
   --report reports/leak/macos-arm64.generated-hello-123.json
 ```
 
+RSS gate 在 glibc 平台的基线和每个测量周期后调用 `malloc_trim` 请求归还未使用页。这只作用于测试进程，避免把 Linux allocator cache 波动当成 Core 对象泄漏；仍存活或不可释放的分配继续计入 RSS，32 MiB 总增长和 8 MiB/周期门槛不变。其他平台继续依靠预热后的原生 RSS。
+
 无 cwd、locale、隐式环境依赖：
 
 ```bash

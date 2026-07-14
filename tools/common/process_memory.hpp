@@ -11,11 +11,22 @@
 #include <sys/resource.h>
 #else
 #include <cstdio>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <sys/resource.h>
 #include <unistd.h>
 #endif
 
 namespace light_ocr::tools {
+
+inline void release_unused_memory() noexcept {
+#if defined(__GLIBC__)
+  // RSS gates should measure live allocations rather than pages retained in
+  // glibc's process-wide malloc cache after a complete lifecycle.
+  (void)malloc_trim(0);
+#endif
+}
 
 inline std::uint64_t resident_memory_bytes() noexcept {
 #if defined(_WIN32)
