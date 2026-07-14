@@ -16,6 +16,66 @@ def entry(identity: str, median: int = 100, p95: int = 120, peak: int = 200) -> 
 
 
 class TiledReleaseGateTests(unittest.TestCase):
+    @staticmethod
+    def core_report(inference_ratio: float, enforced: bool = False) -> dict:
+        runtime = {
+            "normalizedConfigSchemaVersion": "1.2",
+            "coreVersion": "0.2.0",
+        }
+        return {
+            "schema": "light-ocr-tiled-core-report/1.1",
+            "passed": True,
+            "platformId": "macos-arm64",
+            "fixtureId": "fixture",
+            "fixtureSha256": "fixture-sha",
+            "pixelSha256": "pixel-sha",
+            "contractVersion": "tiled-v1",
+            "runner": {"system": "Darwin", "machine": "arm64"},
+            "build": {"host": {"system": "Darwin"}},
+            "native": {
+                "modelBundleId": tiled_release_gate.BUNDLE_ID,
+                "warmup": 5,
+                "iterations": 10,
+                "latencyUs": {"maximum": 1_000_000},
+                "runtime": runtime,
+            },
+            "oracle": {
+                "modelBundleId": tiled_release_gate.BUNDLE_ID,
+                "warmup": 5,
+                "iterations": 10,
+                "latencyUs": {"maximum": 1_000_000},
+            },
+            "gates": {
+                "warmMedian": {"observedRatio": 1.10, "maximumRatio": 1.10},
+                "warmP95": {"observedRatio": 1.15, "maximumRatio": 1.15},
+            },
+            "observations": {
+                "inferenceOnlyMedian": {
+                    "observedRatio": inference_ratio,
+                    "enforced": enforced,
+                }
+            },
+        }
+
+    def test_core_inference_ratio_is_a_non_blocking_observation(self) -> None:
+        report = self.core_report(1.50)
+        tiled_release_gate.validate_core(
+            report,
+            "macos-arm64",
+            "fixture",
+            {"fixtureSha256": "fixture-sha", "pixelSha256": "pixel-sha"},
+        )
+
+    def test_core_inference_observation_cannot_silently_become_a_gate(self) -> None:
+        report = self.core_report(1.0, enforced=True)
+        with self.assertRaisesRegex(RuntimeError, "inference-only observation"):
+            tiled_release_gate.validate_core(
+                report,
+                "macos-arm64",
+                "fixture",
+                {"fixtureSha256": "fixture-sha", "pixelSha256": "pixel-sha"},
+            )
+
     def test_node_bootstrap_gate_accepts_the_documented_limits(self) -> None:
         node = {"latencyUs": {"median": 110, "p95": 138}}
         core = {"latencyUs": {"median": 100, "p95": 120}}

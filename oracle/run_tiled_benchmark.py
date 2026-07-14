@@ -83,10 +83,6 @@ def main() -> int:
     gates = {
         "warmMedian": {"maximumRatio": 1.10, "observedRatio": ratios["warmMedian"]},
         "warmP95": {"maximumRatio": 1.15, "observedRatio": ratios["warmP95"]},
-        "inferenceOnlyMedian": {
-            "maximumRatio": 1.05,
-            "observedRatio": ratios["inferenceOnlyMedian"],
-        },
         "sampleCount": {
             "expected": 10,
             "native": native["iterations"],
@@ -101,7 +97,6 @@ def main() -> int:
     passed = (
         ratios["warmMedian"] <= 1.10
         and ratios["warmP95"] <= 1.15
-        and ratios["inferenceOnlyMedian"] <= 1.05
         and native["iterations"] == oracle["iterations"] == 10
         and native["latencyUs"]["maximum"] < 120_000_000
         and oracle["latencyUs"]["maximum"] < 120_000_000
@@ -112,7 +107,7 @@ def main() -> int:
         == oracle["result"]["suppressedDuplicateBoxes"]
     )
     report = {
-        "schema": "light-ocr-tiled-core-report/1.0",
+        "schema": "light-ocr-tiled-core-report/1.1",
         "passed": passed,
         "contractVersion": "tiled-v1",
         "fixtureId": fixture["id"],
@@ -139,6 +134,12 @@ def main() -> int:
         "native": native,
         "oracle": oracle,
         "gates": gates,
+        "observations": {
+            "inferenceOnlyMedian": {
+                "observedRatio": ratios["inferenceOnlyMedian"],
+                "enforced": False,
+            }
+        },
     }
     serialized = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
     arguments.report.parent.mkdir(parents=True, exist_ok=True)

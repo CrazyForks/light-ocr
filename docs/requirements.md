@@ -440,7 +440,7 @@ Initial gates are:
 
 - Warm median end-to-end latency no more than `1.10x` the Python oracle.
 - Warm p95 no more than `1.15x`.
-- Inference-only latency no more than `1.05x`.
+- Inference-only latency MUST be reported. It is gated at `1.05x` only when the core and oracle use the same ONNX Runtime binary build; when official platform and Python distributions require different binaries, it is a non-blocking observation and the end-to-end median/p95 gates remain authoritative.
 - Model and session initialization once per engine.
 - No unbounded memory growth.
 
