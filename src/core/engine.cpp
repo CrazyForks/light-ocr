@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "detection/db_postprocess.hpp"
+#include "detection/tiled.hpp"
 #include "geometry/geometry.hpp"
 #include "inference/onnxruntime/backend.hpp"
 #include "model/bundle_data.hpp"
@@ -51,6 +53,8 @@ bool valid_limits(const ResourceLimits& value, const ResourceLimits& ceiling) {
          value.max_detection_side <= ceiling.max_detection_side &&
          value.max_detection_candidates > 0 &&
          value.max_detection_candidates <= ceiling.max_detection_candidates &&
+         value.max_detection_tiles > 0 &&
+         value.max_detection_tiles <= ceiling.max_detection_tiles &&
          value.max_recognition_batch_size > 0 &&
          value.max_recognition_batch_size <= ceiling.max_recognition_batch_size &&
          value.max_recognition_width > 0 &&
@@ -114,10 +118,13 @@ class EngineImpl final : public Engine {
           detection_max_side == 0 ||
           detection_max_side > info_.detection_max_side ||
           (info_.detection_strategy != DetectionStrategy::bounded &&
+           info_.detection_strategy != DetectionStrategy::tiled &&
            info_.detection_strategy != DetectionStrategy::upstream_exact) ||
           (info_.detection_strategy == DetectionStrategy::bounded &&
            detection_max_side % bundle_->detection.dimension_multiple != 0) ||
           (info_.detection_strategy == DetectionStrategy::upstream_exact &&
+           options.detection_max_side.has_value()) ||
+          (info_.detection_strategy == DetectionStrategy::tiled &&
            options.detection_max_side.has_value())) {
         return failure<OcrResult>(ErrorCode::invalid_argument,
                                   "Request options are outside effective limits");
@@ -141,41 +148,185 @@ class EngineImpl final : public Engine {
       internal::DetectionBoxes detected;
       std::uint32_t detection_input_width = 0;
       std::uint32_t detection_input_height = 0;
-      {
+      std::uint32_t raw_detection_boxes = 0;
+      std::uint32_t suppressed_duplicate_boxes = 0;
+      std::uint32_t max_live_detection_pass_buffers = 0;
+      std::vector<DetectionPassShape> detection_passes;
+      auto run_detection_pass = [&](const cv::Mat& pass_image,
+                                    std::uint32_t original_width,
+                                    std::uint32_t original_height,
+                                    DetectionStrategy preprocess_strategy,
+                                    std::uint32_t pass_max_side,
+                                    const ResourceLimits& pass_limits,
+                                    bool reject_candidate_overflow,
+                                    DetectionPassShape* pass_shape)
+          -> Result<internal::DetectionBoxes> {
         stage_begin = Clock::now();
-        auto detection_limits = info_.limits;
-        detection_limits.max_temporary_bytes -= image_bytes;
         auto detection_input_result = internal::make_detection_input(
-            validated.bgr, bundle_->detection, info_.detection_strategy,
-            detection_max_side, detection_limits);
+            pass_image, bundle_->detection, preprocess_strategy, pass_max_side,
+            pass_limits);
         stage_end = Clock::now();
-        timing.detection_preprocess_us = elapsed_us(stage_begin, stage_end);
+        timing.detection_preprocess_us += elapsed_us(stage_begin, stage_end);
         if (!detection_input_result) {
-          return Result<OcrResult>::failure(detection_input_result.error());
+          return Result<internal::DetectionBoxes>::failure(
+              detection_input_result.error());
         }
         auto detection_input = std::move(detection_input_result).value();
-        detection_input_height = static_cast<std::uint32_t>(detection_input.shape[2]);
-        detection_input_width = static_cast<std::uint32_t>(detection_input.shape[3]);
+        const auto pass_input_height =
+            static_cast<std::uint32_t>(detection_input.shape[2]);
+        const auto pass_input_width =
+            static_cast<std::uint32_t>(detection_input.shape[3]);
+        detection_input_height = std::max(detection_input_height, pass_input_height);
+        detection_input_width = std::max(detection_input_width, pass_input_width);
+        pass_shape->tensor_height = pass_input_height;
+        pass_shape->tensor_width = pass_input_width;
 
         stage_begin = Clock::now();
         auto detection_output_result =
             detection_->run(detection_input.values, detection_input.shape);
         stage_end = Clock::now();
-        timing.detection_inference_us = elapsed_us(stage_begin, stage_end);
+        timing.detection_inference_us += elapsed_us(stage_begin, stage_end);
         if (!detection_output_result) {
-          return Result<OcrResult>::failure(detection_output_result.error());
+          return Result<internal::DetectionBoxes>::failure(
+              detection_output_result.error());
         }
         auto detection_output = std::move(detection_output_result).value();
 
         stage_begin = Clock::now();
         auto detected_result = internal::db_postprocess(
             detection_output.data(), detection_output.size(),
-            detection_output.shape(), image.width, image.height, bundle_->detection,
-            info_.limits);
+            detection_output.shape(), original_width, original_height,
+            bundle_->detection, pass_limits, false,
+            reject_candidate_overflow);
         stage_end = Clock::now();
-        timing.detection_postprocess_us = elapsed_us(stage_begin, stage_end);
-        if (!detected_result) return Result<OcrResult>::failure(detected_result.error());
+        timing.detection_postprocess_us += elapsed_us(stage_begin, stage_end);
+        if (!detected_result) {
+          return Result<internal::DetectionBoxes>::failure(
+              detected_result.error());
+        }
+        auto pass_detected = std::move(detected_result).value();
+        pass_shape->contour_candidates = pass_detected.total_contours;
+        if (pass_detected.boxes.size() >
+            std::numeric_limits<std::uint32_t>::max()) {
+          return failure<internal::DetectionBoxes>(
+              ErrorCode::resource_limit_exceeded,
+              "Detection box count exceeds its representable limit");
+        }
+        pass_shape->raw_candidates =
+            static_cast<std::uint32_t>(pass_detected.boxes.size());
+        return Result<internal::DetectionBoxes>::success(
+            std::move(pass_detected));
+      };
+
+      auto detection_limits = info_.limits;
+      detection_limits.max_temporary_bytes -= image_bytes;
+      if (info_.detection_strategy == DetectionStrategy::tiled) {
+        if (!bundle_->tiled_detection) {
+          return failure<OcrResult>(ErrorCode::unsupported_capability,
+                                    "Tiled detection is unavailable in this bundle");
+        }
+        auto tile_plan_result = internal::plan_detection_tiles(
+            image.width, image.height, *bundle_->tiled_detection,
+            info_.limits.max_detection_tiles);
+        if (!tile_plan_result) {
+          return Result<OcrResult>::failure(tile_plan_result.error());
+        }
+        auto tile_plan = std::move(tile_plan_result).value();
+        std::vector<internal::TiledCandidate> raw_candidates;
+        raw_candidates.reserve(std::min<std::size_t>(
+            info_.limits.max_detection_candidates, 256));
+        std::uint32_t total_contours = 0;
+        if (options.include_diagnostics) detection_passes.reserve(tile_plan.size());
+        for (const auto& tile : tile_plan) {
+          auto pass_limits = detection_limits;
+          pass_limits.max_detection_candidates =
+              info_.limits.max_detection_candidates - total_contours;
+          DetectionPassShape pass_shape;
+          pass_shape.tile_ordinal = tile.ordinal;
+          pass_shape.x = tile.x;
+          pass_shape.y = tile.y;
+          pass_shape.width = tile.width;
+          pass_shape.height = tile.height;
+          const cv::Mat tile_view = validated.bgr(cv::Rect(
+              static_cast<int>(tile.x), static_cast<int>(tile.y),
+              static_cast<int>(tile.width), static_cast<int>(tile.height)));
+          auto pass_result = run_detection_pass(
+              tile_view, tile.width, tile.height, DetectionStrategy::bounded,
+              bundle_->tiled_detection->tile_side, pass_limits, true,
+              &pass_shape);
+          if (!pass_result) {
+            return Result<OcrResult>::failure(pass_result.error());
+          }
+          auto pass_detected = std::move(pass_result).value();
+          std::uint32_t updated_contours = 0;
+          std::uint32_t updated_raw_boxes = 0;
+          if (!internal::checked_add(total_contours,
+                                     pass_detected.total_contours,
+                                     &updated_contours) ||
+              !internal::checked_add(raw_detection_boxes,
+                                     pass_shape.raw_candidates,
+                                     &updated_raw_boxes) ||
+              updated_contours > info_.limits.max_detection_candidates ||
+              updated_raw_boxes > info_.limits.max_detection_candidates ||
+              pass_detected.boxes.size() != pass_detected.scores.size()) {
+            return failure<OcrResult>(
+                ErrorCode::resource_limit_exceeded,
+                "Tiled detection candidates exceed the effective limit");
+          }
+          total_contours = updated_contours;
+          raw_detection_boxes = updated_raw_boxes;
+          for (std::size_t index = 0; index < pass_detected.boxes.size(); ++index) {
+            auto candidate_result = internal::make_tiled_candidate(
+                pass_detected.boxes[index], pass_detected.scores[index], tile,
+                image.width, image.height, static_cast<std::uint32_t>(index),
+                bundle_->tiled_detection->artificial_boundary_margin);
+            if (!candidate_result) {
+              return Result<OcrResult>::failure(candidate_result.error());
+            }
+            raw_candidates.push_back(std::move(candidate_result).value());
+          }
+          if (options.include_diagnostics) {
+            detection_passes.push_back(pass_shape);
+          }
+          max_live_detection_pass_buffers = 1;
+        }
+
+        stage_begin = Clock::now();
+        auto merge_result = internal::merge_tiled_candidates(
+            std::move(raw_candidates), *bundle_->tiled_detection);
+        stage_end = Clock::now();
+        timing.detection_merge_us = elapsed_us(stage_begin, stage_end);
+        if (!merge_result) {
+          return Result<OcrResult>::failure(merge_result.error());
+        }
+        auto merged = std::move(merge_result).value();
+        suppressed_duplicate_boxes = merged.suppressed_duplicates;
+        detected.contour_candidates = total_contours;
+        detected.total_contours = total_contours;
+        detected.boxes.reserve(merged.representatives.size());
+        detected.scores.reserve(merged.representatives.size());
+        for (auto& representative : merged.representatives) {
+          detected.boxes.push_back(std::move(representative.global_quad));
+          detected.scores.push_back(
+              static_cast<float>(representative.db_score));
+        }
+      } else {
+        DetectionPassShape pass_shape;
+        pass_shape.width = image.width;
+        pass_shape.height = image.height;
+        auto detected_result = run_detection_pass(
+            validated.bgr, image.width, image.height,
+            info_.detection_strategy, detection_max_side, detection_limits,
+            false, &pass_shape);
+        if (!detected_result) {
+          return Result<OcrResult>::failure(detected_result.error());
+        }
         detected = std::move(detected_result).value();
+        raw_detection_boxes = pass_shape.raw_candidates;
+        max_live_detection_pass_buffers = 1;
+        if (options.include_diagnostics) {
+          detection_passes.push_back(pass_shape);
+        }
       }
 
       stage_begin = Clock::now();
@@ -288,6 +439,12 @@ class EngineImpl final : public Engine {
       if (result.diagnostics) {
         result.diagnostics->detection_input_width = detection_input_width;
         result.diagnostics->detection_input_height = detection_input_height;
+        result.diagnostics->raw_detection_boxes = raw_detection_boxes;
+        result.diagnostics->suppressed_duplicate_boxes =
+            suppressed_duplicate_boxes;
+        result.diagnostics->max_live_detection_pass_buffers =
+            max_live_detection_pass_buffers;
+        result.diagnostics->detection_passes = std::move(detection_passes);
         result.diagnostics->recognition_batch_shapes =
             std::move(recognition_batch_shapes);
       }
@@ -360,15 +517,24 @@ Result<std::unique_ptr<Engine>> Engine::create(ModelBundle bundle,
     }
     const auto detection_strategy = options.detection.strategy.value_or(
         bundle.data_->default_detection_strategy);
+    if (detection_strategy == DetectionStrategy::tiled &&
+        !bundle.data_->tiled_detection) {
+      return failure<std::unique_ptr<Engine>>(
+          ErrorCode::unsupported_capability,
+          "Tiled detection is unavailable in this bundle");
+    }
     const auto default_detection_max_side =
         detection_strategy == bundle.data_->default_detection_strategy
             ? bundle.data_->default_detection_max_side
             : detection_strategy == DetectionStrategy::bounded
                   ? 960u
+                  : detection_strategy == DetectionStrategy::tiled
+                        ? bundle.data_->tiled_detection->tile_side
                   : bundle.data_->detection.max_side_limit;
     const auto detection_max_side = options.detection.max_side.value_or(
         default_detection_max_side);
     if ((detection_strategy != DetectionStrategy::bounded &&
+         detection_strategy != DetectionStrategy::tiled &&
          detection_strategy != DetectionStrategy::upstream_exact) ||
         (detection_strategy == DetectionStrategy::bounded &&
          (detection_max_side < bundle.data_->detection.minimum_dimension ||
@@ -378,7 +544,12 @@ Result<std::unique_ptr<Engine>> Engine::create(ModelBundle bundle,
         (detection_strategy == DetectionStrategy::upstream_exact &&
          (options.detection.max_side.has_value() ||
           detection_max_side != bundle.data_->detection.max_side_limit ||
-          detection_max_side > limits.max_detection_side))) {
+          detection_max_side > limits.max_detection_side)) ||
+        (detection_strategy == DetectionStrategy::tiled &&
+         (options.detection.max_side.has_value() ||
+          detection_max_side != bundle.data_->tiled_detection->tile_side ||
+          detection_max_side > limits.max_detection_side ||
+          limits.max_detection_tiles == 0))) {
       return failure<std::unique_ptr<Engine>>(
           ErrorCode::invalid_argument,
           "Engine detection defaults are outside limits");
@@ -398,6 +569,8 @@ Result<std::unique_ptr<Engine>> Engine::create(ModelBundle bundle,
     info.core_version = LIGHT_OCR_VERSION;
     info.model_bundle_id = bundle.data_->id;
     info.model_bundle_schema_version = bundle.data_->schema_version;
+    info.normalized_config_schema_version =
+        bundle.data_->normalized_config_schema_version;
     info.backend = "ONNX Runtime 1.22.0";
     info.execution_provider = "CPUExecutionProvider";
     info.capabilities = bundle.data_->capabilities;
@@ -406,6 +579,14 @@ Result<std::unique_ptr<Engine>> Engine::create(ModelBundle bundle,
     info.inter_op_threads = options.inter_op_threads;
     info.detection_strategy = detection_strategy;
     info.detection_max_side = detection_max_side;
+    if (detection_strategy == DetectionStrategy::tiled) {
+      const auto& tiled = *bundle.data_->tiled_detection;
+      info.tiled_detection = TiledDetectionInfo{
+          tiled.contract_version, tiled.tile_side, tiled.minimum_overlap,
+          tiled.artificial_boundary_margin,
+          static_cast<float>(tiled.merge_iou_threshold),
+          static_cast<float>(tiled.merge_ios_threshold)};
+    }
     info.default_recognition_score_threshold = score_threshold;
     info.default_recognition_batch_size = batch_size;
     return Result<std::unique_ptr<Engine>>::success(std::unique_ptr<Engine>(new EngineImpl(

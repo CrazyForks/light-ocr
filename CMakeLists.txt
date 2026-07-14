@@ -7,7 +7,7 @@ if(APPLE AND (NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET OR
     "Minimum macOS deployment target" FORCE)
 endif()
 
-project(light_ocr VERSION 0.1.0 LANGUAGES CXX)
+project(light_ocr VERSION 0.2.0 LANGUAGES CXX)
 
 include(CTest)
 include(GNUInstallDirs)
@@ -63,6 +63,7 @@ endif()
 add_library(light_ocr_core STATIC
   src/core/engine.cpp
   src/detection/db_postprocess.cpp
+  src/detection/tiled.cpp
   src/geometry/geometry.cpp
   src/inference/onnxruntime/backend.cpp
   src/model/model_bundle.cpp
@@ -149,6 +150,7 @@ if(LIGHT_OCR_BUILD_TESTS)
     tests/unit/test_checked_math.cpp
     tests/unit/test_ctc.cpp
     tests/unit/test_detection.cpp
+    tests/unit/test_tiled.cpp
     tests/unit/test_geometry.cpp
     tests/unit/test_image.cpp
     tests/unit/test_model_bundle.cpp
@@ -169,14 +171,35 @@ if(LIGHT_OCR_BUILD_TESTS)
   light_ocr_stage_onnxruntime(light_ocr_integration_tests)
   add_test(NAME light_ocr_integration_tests COMMAND light_ocr_integration_tests)
   set_tests_properties(light_ocr_integration_tests PROPERTIES SKIP_RETURN_CODE 77)
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1/manifest.json")
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2/manifest.json")
     set_tests_properties(light_ocr_integration_tests PROPERTIES
-      ENVIRONMENT "LIGHT_OCR_MODEL_BUNDLE=${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1")
+      ENVIRONMENT "LIGHT_OCR_MODEL_BUNDLE=${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2")
+    if(LIGHT_OCR_BUILD_TOOLS)
+      add_test(NAME light_ocr_tiled_memory_blank_2048
+        COMMAND "$<TARGET_FILE:light_ocr_memory_gate>"
+          --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
+          --pixels "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures/generated-blank/pixels.bin"
+          --width 320 --height 160 --stride 960 --format bgr8
+          --target-width 2048 --target-height 2048 --profile tiled_v1
+          --maximum-peak-bytes 1073741824 --maximum-boxes 0
+          --report "${CMAKE_BINARY_DIR}/reports/tiled/blank-2048.json")
+      add_test(NAME light_ocr_tiled_memory_dense_2048
+        COMMAND "$<TARGET_FILE:light_ocr_memory_gate>"
+          --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
+          --pixels "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures/paddleocr-xfund-form/pixels.bin"
+          --width 1488 --height 2105 --stride 4464 --format bgr8
+          --target-width 2048 --target-height 2048 --profile tiled_v1
+          --maximum-peak-bytes 1073741824 --minimum-boxes 100
+          --report "${CMAKE_BINARY_DIR}/reports/tiled/dense-2048.json")
+      set_tests_properties(light_ocr_tiled_memory_blank_2048
+        light_ocr_tiled_memory_dense_2048 PROPERTIES
+        LABELS "acceptance;memory;tiled" TIMEOUT 120)
+    endif()
     if(LIGHT_OCR_BUILD_TOOLS AND APPLE AND
        CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
       add_test(NAME light_ocr_memory_blank_2048
         COMMAND "$<TARGET_FILE:light_ocr_memory_gate>"
-          --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+          --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
           --pixels "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures/generated-blank/pixels.bin"
           --width 320 --height 160 --stride 960 --format bgr8
           --target-width 2048 --target-height 2048
@@ -184,7 +207,7 @@ if(LIGHT_OCR_BUILD_TESTS)
           --report "${CMAKE_BINARY_DIR}/reports/memory/blank-2048.json")
       add_test(NAME light_ocr_memory_dense_2048
         COMMAND "$<TARGET_FILE:light_ocr_memory_gate>"
-          --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+          --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
           --pixels "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures/paddleocr-xfund-form/pixels.bin"
           --width 1488 --height 2105 --stride 4464 --format bgr8
           --target-width 2048 --target-height 2048
@@ -195,7 +218,7 @@ if(LIGHT_OCR_BUILD_TESTS)
     endif()
   endif()
   if(LIGHT_OCR_BUILD_TOOLS AND LIGHT_OCR_ORACLE_PYTHON AND
-     EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1/manifest.json")
+     EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2/manifest.json")
     set(_light_ocr_parity_oracle_arguments)
     if(LIGHT_OCR_PARITY_LIVE_ORACLE)
       list(APPEND _light_ocr_parity_oracle_arguments --live-oracle)
@@ -204,28 +227,28 @@ if(LIGHT_OCR_BUILD_TESTS)
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/test_compare.py")
     add_test(NAME light_ocr_oracle_golden_lock_verify
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/generate_goldens.py"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures"
         --output "${CMAKE_CURRENT_SOURCE_DIR}/corpus/goldens"
         --profile upstream_exact
         --verify-lock-only)
     add_test(NAME light_ocr_oracle_golden_verify
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/generate_goldens.py"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures"
         --output "${CMAKE_CURRENT_SOURCE_DIR}/corpus/goldens"
         --profile upstream_exact
         --verify)
     add_test(NAME light_ocr_oracle_bounded_golden_lock_verify
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/generate_goldens.py"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures"
         --output "${CMAKE_CURRENT_SOURCE_DIR}/corpus/goldens-bounded"
         --profile bounded_default
         --verify-lock-only)
     add_test(NAME light_ocr_oracle_bounded_golden_verify
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/generate_goldens.py"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures"
         --output "${CMAKE_CURRENT_SOURCE_DIR}/corpus/goldens-bounded"
         --profile bounded_default
@@ -241,14 +264,14 @@ if(LIGHT_OCR_BUILD_TESTS)
     add_test(NAME light_ocr_parity_smoke
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_parity.py"
         --native-probe "$<TARGET_FILE:light_ocr_stage_probe>"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixture "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures/generated-hello-123/fixture.json"
         --profile upstream_exact
         ${_light_ocr_parity_oracle_arguments})
     add_test(NAME light_ocr_parity_corpus
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_corpus.py"
         --native-probe "$<TARGET_FILE:light_ocr_stage_probe>"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures"
         --report-dir "${CMAKE_BINARY_DIR}/reports/parity"
         --profile upstream_exact
@@ -256,14 +279,14 @@ if(LIGHT_OCR_BUILD_TESTS)
     add_test(NAME light_ocr_parity_bounded_smoke
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_parity.py"
         --native-probe "$<TARGET_FILE:light_ocr_stage_probe>"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixture "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures/generated-hello-123/fixture.json"
         --profile bounded_default
         ${_light_ocr_parity_oracle_arguments})
     add_test(NAME light_ocr_parity_bounded_corpus
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_corpus.py"
         --native-probe "$<TARGET_FILE:light_ocr_stage_probe>"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures"
         --report-dir "${CMAKE_BINARY_DIR}/reports/parity-bounded"
         --profile bounded_default
@@ -271,11 +294,11 @@ if(LIGHT_OCR_BUILD_TESTS)
     add_test(NAME light_ocr_quality_baseline
       COMMAND "${LIGHT_OCR_ORACLE_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_quality.py"
         --native-probe "$<TARGET_FILE:light_ocr_stage_probe>"
-        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.1"
+        --bundle "${CMAKE_CURRENT_SOURCE_DIR}/models/generated/ppocrv6-small-onnx-20260714.2"
         --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/corpus/fixtures"
         --ground-truth-lock "${CMAKE_CURRENT_SOURCE_DIR}/corpus/ground-truth.lock.json"
         --profile bounded_default
-        --report "${CMAKE_BINARY_DIR}/reports/quality/ppocrv6-small-onnx-20260714.1.json")
+        --report "${CMAKE_BINARY_DIR}/reports/quality/ppocrv6-small-onnx-20260714.2.json")
     set_tests_properties(light_ocr_oracle_golden_lock_verify
       light_ocr_oracle_bounded_golden_lock_verify light_ocr_ground_truth_verify
       light_ocr_contract_manifest_verify light_ocr_parity_corpus

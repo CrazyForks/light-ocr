@@ -1,12 +1,12 @@
 # light-ocr Node-API 适配器设计
 
-状态：v1 adapter 与 `@arcships/light-ocr@0.1.0` 已实现并发布；四平台 Node.js 22/24 matrix 已通过<br>
+状态：v1 adapter 与 `@arcships/light-ocr@0.1.0` 已发布；0.2.0 tiled additive mapping 已在源码实现，尚未发布<br>
 更新时间：2026-07-14  
 Authority：JavaScript/TypeScript API、异步调度、内存所有权、Node.js 生命周期与 npm 布局  
 Core contract：[native-api.md](native-api.md)  
 Decision：[decisions.md](decisions.md) D101、D105
 
-后续 `DetectionStrategy: "tiled"` 的 additive Node types、diagnostics、runtime identity 与 lockstep 发布条件见 [Tiled Detection 技术设计与验收规格](tiled-design-and-acceptance.md)。该规格当前为 Draft，不属于已发布的 `0.1.0` API。
+`DetectionStrategy: "tiled"` 的 additive Node types、diagnostics 和 runtime identity 已进入 0.2.0 candidate 源码；算法与 lockstep 发布条件见 [Tiled Detection 技术设计与验收规格](tiled-design-and-acceptance.md)。它不属于已发布的 `0.1.0` API，完整门槛通过前也不会进入 npm `latest`。
 
 ## 1. 结论
 
@@ -73,12 +73,13 @@ export interface ResourceLimits {
   readonly maxPixels: number;
   readonly maxDetectionSide: number;
   readonly maxDetectionCandidates: number;
+  readonly maxDetectionTiles: number;
   readonly maxRecognitionBatchSize: number;
   readonly maxRecognitionWidth: number;
   readonly maxTemporaryBytes: number;
 }
 
-export type DetectionStrategy = "bounded" | "upstreamExact";
+export type DetectionStrategy = "bounded" | "tiled" | "upstreamExact";
 
 export interface DetectionOptions {
   readonly strategy?: DetectionStrategy;
@@ -96,7 +97,10 @@ export interface CreateEngineOptions {
   readonly recognitionBatchSize?: number;
   readonly detection?: DetectionOptions;
   /** Complete replacement; every value may only reduce the bundle ceiling. */
-  readonly reducedLimits?: ResourceLimits;
+  readonly reducedLimits?: Omit<ResourceLimits, "maxDetectionTiles"> & {
+    /** Omission preserves the 0.1 reducedLimits source shape. */
+    readonly maxDetectionTiles?: number;
+  };
   /** Running plus queued recognize calls. Default 4; range 1..64. */
   readonly queueCapacity?: number;
   /** Pixel snapshots retained by this engine. Default 256 MiB; maximum 1 GiB. */
@@ -110,7 +114,7 @@ export interface RecognizeOptions {
   readonly signal?: AbortSignal;
   /** The initial bundle reports this capability as false. */
   readonly useTextlineOrientation?: boolean;
-  /** May only lower the side of a bounded engine. */
+  /** May only lower the side of a bounded engine; tiled rejects this field. */
   readonly detectionMaxSide?: number;
 }
 
@@ -144,6 +148,20 @@ export interface Diagnostics {
   readonly acceptedBoxes: number;
   readonly detectionInputWidth: number;
   readonly detectionInputHeight: number;
+  readonly rawDetectionBoxes: number;
+  readonly suppressedDuplicateBoxes: number;
+  readonly maxLiveDetectionPassBuffers: number;
+  readonly detectionPasses: readonly {
+    readonly tileOrdinal: number;
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+    readonly tensorWidth: number;
+    readonly tensorHeight: number;
+    readonly contourCandidates: number;
+    readonly rawCandidates: number;
+  }[];
   readonly recognitionBatchShapes: readonly {
     readonly batchSize: number;
     readonly height: number;
@@ -157,6 +175,7 @@ export interface TimingUs {
   readonly detectionPreprocess: number;
   readonly detectionInference: number;
   readonly detectionPostprocess: number;
+  readonly detectionMerge: number;
   readonly cropAndSort: number;
   readonly recognitionPreprocess: number;
   readonly recognitionInference: number;
@@ -177,12 +196,14 @@ export interface EngineInfo {
   readonly coreVersion: string;
   readonly modelBundleId: string;
   readonly modelBundleSchemaVersion: string;
+  readonly normalizedConfigSchemaVersion: string;
   readonly backend: string;
   readonly executionProvider: string;
   readonly capabilities: {
     readonly detection: boolean;
     readonly recognition: boolean;
     readonly textlineOrientation: boolean;
+    readonly tiledDetection: boolean;
   };
   /** Reports the underlying Core contract unchanged. */
   readonly concurrencyMode: "serialized_reject_when_busy";
@@ -191,6 +212,14 @@ export interface EngineInfo {
   readonly interOpThreads: number;
   readonly detectionStrategy: DetectionStrategy;
   readonly detectionMaxSide: number;
+  readonly tiledDetection?: {
+    readonly contractVersion: "tiled-v1";
+    readonly tileSide: 1280;
+    readonly minimumOverlap: 128;
+    readonly artificialBoundaryMargin: 32;
+    readonly mergeIouThreshold: 0.5;
+    readonly mergeIosThreshold: 0.8;
+  };
   readonly defaultRecognitionScoreThreshold: number;
   readonly defaultRecognitionBatchSize: number;
   readonly adapter: {

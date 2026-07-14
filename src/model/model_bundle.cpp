@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -271,10 +272,10 @@ internal::DetectionConfig parse_detection(const Json& root,
   require_string(input, "tensorLayout", "NCHW", "detection.input");
   require_string(input, "tensorType", "float32", "detection.input");
 
-  const auto& resize = schema_version == "1.1"
+  const auto& resize = schema_version != "1.0"
                            ? root.at("sourceDetectionResize")
                            : detection.at("resize");
-  const std::string resize_context = schema_version == "1.1"
+  const std::string resize_context = schema_version != "1.0"
                                          ? "sourceDetectionResize"
                                          : "detection.resize";
   require_string(resize, "limitType", "min", resize_context);
@@ -357,6 +358,58 @@ RuntimeDefaults parse_runtime_defaults(
               (result.detection_strategy != DetectionStrategy::upstream_exact ||
                result.detection_max_side == detection.max_side_limit),
           "Runtime detection default is outside source resize limits");
+  return result;
+}
+
+std::optional<internal::TiledDetectionConfig> parse_tiled_detection(
+    const Json& root, const std::string& schema_version,
+    const internal::DetectionConfig& detection) {
+  if (schema_version != "1.2") return std::nullopt;
+
+  const auto& profile = root.at("runtimeProfiles").at("tiled");
+  internal::TiledDetectionConfig result;
+  result.contract_version =
+      required<std::string>(profile, "contractVersion", "runtimeProfiles.tiled");
+  result.tile_side = required_u32(profile, "tileSide", "runtimeProfiles.tiled");
+  result.minimum_overlap =
+      required_u32(profile, "minimumOverlap", "runtimeProfiles.tiled");
+  result.dimension_multiple =
+      required_u32(profile, "dimensionMultiple", "runtimeProfiles.tiled");
+  result.artificial_boundary_margin = required_u32(
+      profile, "artificialBoundaryMargin", "runtimeProfiles.tiled");
+  require_string(profile, "dimensionMultipleRounding", "ceil_resize",
+                 "runtimeProfiles.tiled");
+  require_string(profile, "tileOrder", "row_major", "runtimeProfiles.tiled");
+  require_string(profile, "recognition", "once_after_global_merge",
+                 "runtimeProfiles.tiled");
+
+  const auto& merge = profile.at("merge");
+  result.merge_iou_threshold =
+      required_finite(merge, "iouThreshold", "runtimeProfiles.tiled.merge");
+  result.merge_ios_threshold = required_finite(
+      merge, "intersectionOverSmallerThreshold", "runtimeProfiles.tiled.merge");
+  require_string(merge, "scope", "different_overlapping_tiles",
+                 "runtimeProfiles.tiled.merge");
+  require_string(merge, "geometry", "select_representative",
+                 "runtimeProfiles.tiled.merge");
+  const auto selection = required<std::vector<std::string>>(
+      merge, "selectionOrder", "runtimeProfiles.tiled.merge");
+  require(selection == std::vector<std::string>(
+                           {"not_artificial_boundary", "higher_db_score",
+                            "farther_from_artificial_boundary",
+                            "lower_tile_ordinal", "lower_candidate_ordinal"}),
+          "Unsupported tiled representative selection order");
+
+  require(result.contract_version == "tiled-v1" && result.tile_side == 1280 &&
+              result.minimum_overlap == 128 &&
+              result.dimension_multiple == 32 &&
+              result.dimension_multiple == detection.dimension_multiple &&
+              result.artificial_boundary_margin == 32 &&
+              result.artificial_boundary_margin <= result.minimum_overlap &&
+              result.tile_side % result.dimension_multiple == 0 &&
+              std::abs(result.merge_iou_threshold - 0.5) <= 1e-6 &&
+              std::abs(result.merge_ios_threshold - 0.8) <= 1e-6,
+          "Unsupported tiled runtime contract", result.contract_version);
   return result;
 }
 
@@ -457,7 +510,7 @@ internal::RecognitionConfig parse_recognition(
   return config;
 }
 
-ResourceLimits parse_limits(const Json& root) {
+ResourceLimits parse_limits(const Json& root, const std::string& schema_version) {
   const auto& limits = root.at("resourceLimits");
   ResourceLimits result;
   result.max_width = required_u32(limits, "maxWidth", "resourceLimits");
@@ -466,6 +519,10 @@ ResourceLimits parse_limits(const Json& root) {
   result.max_detection_side = required_u32(limits, "maxDetectionSide", "resourceLimits");
   result.max_detection_candidates =
       required_u32(limits, "maxDetectionCandidates", "resourceLimits");
+  result.max_detection_tiles =
+      schema_version == "1.2"
+          ? required_u32(limits, "maxDetectionTiles", "resourceLimits")
+          : ResourceLimits{}.max_detection_tiles;
   result.max_recognition_batch_size =
       required_u32(limits, "maxRecognitionBatchSize", "resourceLimits");
   result.max_recognition_width =
@@ -478,6 +535,7 @@ ResourceLimits parse_limits(const Json& root) {
               result.max_pixels <= supported.max_pixels &&
               result.max_detection_side <= supported.max_detection_side &&
               result.max_detection_candidates <= supported.max_detection_candidates &&
+              result.max_detection_tiles <= supported.max_detection_tiles &&
               result.max_recognition_batch_size <= supported.max_recognition_batch_size &&
               result.max_recognition_width <= supported.max_recognition_width &&
               result.max_temporary_bytes <= supported.max_temporary_bytes &&
@@ -599,7 +657,8 @@ std::shared_ptr<const internal::BundleData> parse_bundle(std::vector<BundleFile>
   const auto normalized = parse_json_file(files, normalized_path, 2 * 1024 * 1024);
   const auto normalized_schema =
       required<std::string>(normalized, "schemaVersion", "normalizedConfig");
-  require(normalized_schema == "1.0" || normalized_schema == "1.1",
+  require(normalized_schema == "1.0" || normalized_schema == "1.1" ||
+              normalized_schema == "1.2",
           "Unsupported normalized configuration schema", normalized_schema);
   require(required<std::string>(normalized, "bundleId", "normalizedConfig") == bundle_id,
           "Normalized configuration bundle ID does not match manifest");
@@ -607,10 +666,13 @@ std::shared_ptr<const internal::BundleData> parse_bundle(std::vector<BundleFile>
   auto data = std::make_shared<internal::BundleData>();
   data->id = bundle_id;
   data->schema_version = schema_version;
+  data->normalized_config_schema_version = normalized_schema;
   data->detection_model_path = detection_model_path;
   data->recognition_model_path = recognition_model_path;
   data->files = std::move(files);
   data->detection = parse_detection(normalized, normalized_schema);
+  data->tiled_detection =
+      parse_tiled_detection(normalized, normalized_schema, data->detection);
   const auto runtime_defaults =
       parse_runtime_defaults(normalized, normalized_schema, data->detection);
   data->default_detection_strategy = runtime_defaults.detection_strategy;
@@ -619,11 +681,15 @@ std::shared_ptr<const internal::BundleData> parse_bundle(std::vector<BundleFile>
   data->recognition =
       parse_recognition(normalized, data->files, recognition_dictionary_path,
                         runtime_defaults);
-  data->limits = parse_limits(normalized);
-  data->capabilities = Capabilities{true, true, false};
+  data->limits = parse_limits(normalized, normalized_schema);
+  data->capabilities =
+      Capabilities{true, true, false, data->tiled_detection.has_value()};
   require(data->detection.max_side_limit <= data->limits.max_detection_side &&
               data->default_detection_max_side <= data->limits.max_detection_side &&
               data->detection.max_candidates <= data->limits.max_detection_candidates &&
+              (!data->tiled_detection ||
+               (data->tiled_detection->tile_side <= data->limits.max_detection_side &&
+                data->limits.max_detection_tiles > 0)) &&
               data->recognition.default_batch_size <=
                   data->limits.max_recognition_batch_size &&
               data->recognition.maximum_batch_size <= data->limits.max_recognition_batch_size &&

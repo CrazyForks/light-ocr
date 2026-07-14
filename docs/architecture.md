@@ -1,6 +1,6 @@
 # light-ocr Core Architecture
 
-Status: Implemented for Core 0.1.0  
+Status: Core 0.1.0 published; Core 0.2.0 tiled candidate implemented locally<br>
 Authority: module boundaries, data flow, state ownership, concurrency, and dependency boundaries  
 Requirements: [requirements.md](requirements.md)
 
@@ -250,7 +250,7 @@ This deliberately avoids an internal executor before N-API requirements exist.
 
 ## 8. Memory and resource control
 
-Core 0.1.0 implements D013's bounded detection and one-batch-at-a-time recognition lifecycle. `tiled` remains a separately gated second phase.
+Core 0.1.0 implements D013's bounded detection and one-batch-at-a-time recognition lifecycle. The 0.2.0 candidate adds a separately gated tiled path: it plans row-major source ROIs, executes one detection pass at a time, restores accepted candidates to full-image coordinates, applies deterministic global merge and then reuses the same one-batch-at-a-time recognition pipeline against the original image.
 
 Before the relevant Core-owned allocation, the request checks:
 

@@ -1,6 +1,6 @@
 # light-ocr Tiled Detection 技术设计与验收规格
 
-状态：Draft；尚未实现，不构成 `0.1.0` 已发布能力<br>
+状态：Implementation in progress；Core/Node 主链路已实现，语料、独立 oracle 与四平台受审基线尚未完成，不构成已发布能力<br>
 Authority：`DetectionStrategy::tiled` 的算法、公开 API、runtime contract、语料、报告、四平台门槛与发布条件<br>
 依赖：[高分辨率内存优化设计](memory-optimization.md) · [C++ API](native-api.md) · [Node-API 设计](napi-design.md) · [对齐与质量验证](parity-testing.md)
 
@@ -15,7 +15,7 @@ Authority：`DetectionStrategy::tiled` 的算法、公开 API、runtime contract
 - C++ Core 是分块、合并和排序的唯一实现；Node-API 只映射类型、错误、diagnostics 和生命周期。
 - `tiled-v1` 的 tile/overlap/merge 参数由 bundle 的版本化 runtime contract 固定，首版不提供用户可调旋钮。
 - C++ enum、Node types、normalized-config schema、四平台 prebuild 和六个 npm packages 必须在同一次 lockstep minor release 中出现。
-- 在第 14 节全部通过前，README、类型声明和运行时都不得宣称支持 `tiled`，也不得使用隐藏环境变量提前开放。
+- 在第 14 节全部通过前，README、已发布 npm 类型/运行时都不得宣称支持 `tiled`，也不得使用隐藏环境变量提前开放；candidate 源码中的 additive API 只用于完成验收。
 
 本文是第二阶段 tiled 实现的 authority。`memory-optimization.md` 继续说明整体内存背景；两份文档冲突时，tiled 的算法和验收以本文为准。
 
@@ -720,6 +720,8 @@ npm version 不可覆写。发现 tiled 严重问题时：
 
 ## 13. 实施顺序
 
+当前实现快照（2026-07-14）：步骤 1–5 已进入源码并通过本机 Release Core/Node 测试；步骤 7 的 CLI、1 GiB absolute gate 和四平台 artifact 采集已接入，但 baseline 尚未经四平台 run 与 review。步骤 6、8 的完整验收以及步骤 9 的公开发布仍是阻断项。
+
 1. **Contract 与 bundle**：实现 schema `1.2` parser/validator、`tiled-v1` normalized profile、capability 和新 bundle identity；先完成 malformed/old-bundle tests。
 2. **Planner 与内部数据结构**：实现 checked axis planner、tile identity、candidate score/source metadata 和全局计数；先让纯单元 test vectors 全绿。
 3. **顺序 detection pipeline**：把 engine detection 抽成单 pass primitive，加入 ROI view、逐 tile buffer release 和原图坐标恢复；保持 bounded/upstream path goldens不变。
@@ -736,12 +738,12 @@ npm version 不可覆写。发现 tiled 严重问题时：
 
 只有以下项目全部打勾，才能把本文状态改为 `Implemented` 并公开 `DetectionStrategy::tiled`：
 
-- [ ] schema `1.2`、`tiled-v1`、新 bundle ID/hash 和旧 bundle rejection 已实现并测试。
-- [ ] axis planner、row-major pass、单 tile buffer lifetime 和 checked limits 通过单元/集成测试。
+- [x] schema `1.2`、`tiled-v1`、新 bundle ID/hash 和旧 bundle rejection 已实现并测试。
+- [x] axis planner、row-major pass、单 tile buffer lifetime 和 checked limits 通过单元/集成测试。
 - [ ] DB score/source metadata、IoU/IOS merge、代表选择和全局 reading order 通过 oracle parity。
 - [ ] 2048 small-text、dense、水平边界、垂直边界、四 tile 交点、原图边缘、near-neighbor 与 reading-order ground truth 全部通过。
 - [ ] 最终 duplicate-line count 为 0，近邻独立行无误合并，连续 10 次结果稳定。
-- [ ] C++ public enum/info/diagnostics/timing/limits 与 Node runtime/`.d.ts` 同步，非法组合和旧 bundle 得到稳定错误。
+- [x] C++ public enum/info/diagnostics/timing/limits 与 Node runtime/`.d.ts` 同步，非法组合和旧 bundle 得到稳定错误。
 - [ ] Linux x64 glibc、Windows x64、macOS arm64、macOS x64 的 Core 与 Node absolute peak 均通过 hard gate并保存非空报告。
 - [ ] 四平台 warm median/p95 基线已受审提交，relative bootstrap 和后续 `1.15x` regression gate 有真实失败测试。
 - [ ] 现有 bounded/upstream parity、quality、memory、Node lifecycle 和 package tests 无回归。

@@ -11,7 +11,7 @@ namespace light_ocr {
 
 enum class PixelFormat { gray8, rgb8, bgr8, rgba8 };
 
-enum class DetectionStrategy { bounded, upstream_exact };
+enum class DetectionStrategy { bounded, tiled, upstream_exact };
 
 struct ImageView {
   const std::uint8_t* data = nullptr;
@@ -55,6 +55,18 @@ struct RecognitionBatchShape {
   std::uint32_t width = 0;
 };
 
+struct DetectionPassShape {
+  std::uint32_t tile_ordinal = 0;
+  std::uint32_t x = 0;
+  std::uint32_t y = 0;
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint32_t tensor_width = 0;
+  std::uint32_t tensor_height = 0;
+  std::uint32_t contour_candidates = 0;
+  std::uint32_t raw_candidates = 0;
+};
+
 struct Diagnostics {
   std::vector<RejectedLine> rejected_lines;
   std::vector<DiagnosticWarning> warnings;
@@ -62,6 +74,10 @@ struct Diagnostics {
   std::uint32_t accepted_boxes = 0;
   std::uint32_t detection_input_width = 0;
   std::uint32_t detection_input_height = 0;
+  std::uint32_t raw_detection_boxes = 0;
+  std::uint32_t suppressed_duplicate_boxes = 0;
+  std::uint32_t max_live_detection_pass_buffers = 0;
+  std::vector<DetectionPassShape> detection_passes;
   std::vector<RecognitionBatchShape> recognition_batch_shapes;
 };
 
@@ -71,6 +87,7 @@ struct Timing {
   std::uint64_t detection_preprocess_us = 0;
   std::uint64_t detection_inference_us = 0;
   std::uint64_t detection_postprocess_us = 0;
+  std::uint64_t detection_merge_us = 0;
   std::uint64_t crop_and_sort_us = 0;
   std::uint64_t recognition_preprocess_us = 0;
   std::uint64_t recognition_inference_us = 0;
@@ -92,6 +109,7 @@ struct ResourceLimits {
   std::uint64_t max_pixels = 40'000'000;
   std::uint32_t max_detection_side = 4'000;
   std::uint32_t max_detection_candidates = 3'000;
+  std::uint32_t max_detection_tiles = 100;
   std::uint32_t max_recognition_batch_size = 8;
   std::uint32_t max_recognition_width = 3'200;
   std::uint64_t max_temporary_bytes = 512ull * 1024 * 1024;
@@ -126,12 +144,23 @@ struct Capabilities {
   bool detection = true;
   bool recognition = true;
   bool textline_orientation = false;
+  bool tiled_detection = false;
+};
+
+struct TiledDetectionInfo {
+  std::string contract_version;
+  std::uint32_t tile_side = 0;
+  std::uint32_t minimum_overlap = 0;
+  std::uint32_t artificial_boundary_margin = 0;
+  float merge_iou_threshold = 0;
+  float merge_ios_threshold = 0;
 };
 
 struct EngineInfo {
   std::string core_version;
   std::string model_bundle_id;
   std::string model_bundle_schema_version;
+  std::string normalized_config_schema_version;
   std::string backend;
   std::string execution_provider;
   Capabilities capabilities;
@@ -141,6 +170,7 @@ struct EngineInfo {
   std::uint32_t inter_op_threads = 1;
   DetectionStrategy detection_strategy = DetectionStrategy::bounded;
   std::uint32_t detection_max_side = 960;
+  std::optional<TiledDetectionInfo> tiled_detection;
   float default_recognition_score_threshold = 0;
   std::uint32_t default_recognition_batch_size = 1;
 };

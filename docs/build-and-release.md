@@ -141,7 +141,7 @@ cmake --build --preset fuzz --parallel
 build/preset-fuzz/bin/light_ocr_fuzz_image -runs=100000
 build/preset-fuzz/bin/light_ocr_fuzz_bundle -runs=100000
 build/preset-fuzz/bin/light_ocr_fuzz_geometry -runs=100000
-LIGHT_OCR_MODEL_BUNDLE="$PWD/models/generated/ppocrv6-small-onnx-20260714.1" \
+LIGHT_OCR_MODEL_BUNDLE="$PWD/models/generated/ppocrv6-small-onnx-20260714.2" \
   build/preset-fuzz/bin/light_ocr_fuzz_lifecycle -runs=10 -max_len=64
 ```
 
@@ -152,7 +152,7 @@ macOS 的系统 Apple Clang 通常没有 libFuzzer runtime，因此本地 `fuzz`
 ```bash
 .cache/oracle-venv/bin/python oracle/run_benchmark.py \
   --native-benchmark build/preset-release/bin/light_ocr_benchmark \
-  --bundle models/generated/ppocrv6-small-onnx-20260714.1 \
+  --bundle models/generated/ppocrv6-small-onnx-20260714.2 \
   --fixture corpus/fixtures/generated-hello-123/fixture.json \
   --warmup 5 --iterations 30 \
   --report reports/benchmark/macos-arm64.generated-hello-123.json
@@ -162,7 +162,7 @@ macOS 的系统 Apple Clang 通常没有 libFuzzer runtime，因此本地 `fuzz`
 
 ```bash
 build/preset-release/bin/light_ocr_leak_check \
-  --bundle models/generated/ppocrv6-small-onnx-20260714.1 \
+  --bundle models/generated/ppocrv6-small-onnx-20260714.2 \
   --pixels corpus/fixtures/generated-hello-123/pixels.bin \
   --width 800 --height 180 --stride 2400 --format bgr8 \
   --warmup 5 --iterations 10 \
@@ -176,7 +176,7 @@ RSS gate 在 glibc 平台的基线和每个测量周期后调用 `malloc_trim` �
 ```bash
 python3 tools/run_offline_check.py \
   --validate build/preset-release/bin/light_ocr_validate \
-  --bundle models/generated/ppocrv6-small-onnx-20260714.1 \
+  --bundle models/generated/ppocrv6-small-onnx-20260714.2 \
   --fixture corpus/fixtures/generated-hello-123/fixture.json
 ```
 
@@ -228,7 +228,7 @@ python3 tools/generate_release_metadata.py \
 模型最终归档当前锁定为：
 
 ```text
-ppocrv6-small-onnx-20260714.1.tar
+ppocrv6-small-onnx-20260714.2.tar
 bytes: 31334400
 sha256: 74e246bf075c141da51e58515c731298fdabee9fd5bd8feb7cf6c7f4f352de17
 ```

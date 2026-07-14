@@ -60,7 +60,7 @@ void replace_payload(std::vector<BundleFile>* files, const std::string& path,
   }
 }
 
-std::vector<BundleFile> valid_bundle_files() {
+std::vector<BundleFile> valid_bundle_files(bool tiled = false) {
   Json dictionary = {{"schemaVersion", "1.0"}, {"characters", Json::array({"a", " "})}};
   Json normalized = {
       {"schemaVersion", "1.1"},
@@ -121,6 +121,29 @@ std::vector<BundleFile> valid_bundle_files() {
           {"dictionaryPath", "rec/dictionary.json"}, {"dictionaryEntries", 2}}},
         {"defaultScoreThreshold", 0.0}}}};
 
+  if (tiled) {
+    normalized["schemaVersion"] = "1.2";
+    normalized["resourceLimits"]["maxDetectionTiles"] = 100;
+    normalized["runtimeProfiles"]["tiled"] = {
+        {"contractVersion", "tiled-v1"},
+        {"tileSide", 1280},
+        {"minimumOverlap", 128},
+        {"dimensionMultiple", 32},
+        {"dimensionMultipleRounding", "ceil_resize"},
+        {"artificialBoundaryMargin", 32},
+        {"tileOrder", "row_major"},
+        {"merge",
+         {{"iouThreshold", 0.5},
+          {"intersectionOverSmallerThreshold", 0.8},
+          {"scope", "different_overlapping_tiles"},
+          {"geometry", "select_representative"},
+          {"selectionOrder",
+           {"not_artificial_boundary", "higher_db_score",
+            "farther_from_artificial_boundary", "lower_tile_ordinal",
+            "lower_candidate_ordinal"}}}},
+        {"recognition", "once_after_global_merge"}};
+  }
+
   std::vector<BundleFile> files = {
       {"normalized-config.json", bytes(normalized.dump())},
       {"det/inference.onnx", bytes("det-model")},
@@ -180,6 +203,50 @@ LIGHT_OCR_TEST(model_bundle_accepts_complete_hashed_contract) {
   EXPECT_TRUE(result);
   EXPECT_EQ(result.value().id(), "test-bundle");
   EXPECT_EQ(result.value().schema_version(), "1.0");
+}
+
+LIGHT_OCR_TEST(model_bundle_accepts_tiled_v1_normalized_contract) {
+  auto result = ModelBundle::create(valid_bundle_files(true));
+  if (!result) {
+    light_ocr::test::fail("result", __FILE__, __LINE__,
+                          result.error().message + ": " + result.error().detail);
+  }
+}
+
+LIGHT_OCR_TEST(old_normalized_bundle_rejects_tiled_engine_before_session_load) {
+  auto bundle = ModelBundle::create(valid_bundle_files());
+  EXPECT_TRUE(bundle);
+  EngineOptions options;
+  options.detection.strategy = DetectionStrategy::tiled;
+  auto engine = Engine::create(std::move(bundle).value(), options);
+  EXPECT_FALSE(engine);
+  EXPECT_EQ(engine.error().code, ErrorCode::unsupported_capability);
+}
+
+LIGHT_OCR_TEST(model_bundle_rejects_mutated_tiled_v1_contract) {
+  auto threshold = valid_bundle_files(true);
+  for (const auto& file : threshold) {
+    if (file.path != "normalized-config.json") continue;
+    auto normalized = Json::parse(std::string(file.bytes->begin(), file.bytes->end()));
+    normalized["runtimeProfiles"]["tiled"]["merge"]["iouThreshold"] = 0.51;
+    replace_payload(&threshold, "normalized-config.json", normalized.dump());
+    break;
+  }
+  auto threshold_result = ModelBundle::create(std::move(threshold));
+  EXPECT_FALSE(threshold_result);
+  EXPECT_EQ(threshold_result.error().code, ErrorCode::invalid_model_bundle);
+
+  auto missing_limit = valid_bundle_files(true);
+  for (const auto& file : missing_limit) {
+    if (file.path != "normalized-config.json") continue;
+    auto normalized = Json::parse(std::string(file.bytes->begin(), file.bytes->end()));
+    normalized["resourceLimits"].erase("maxDetectionTiles");
+    replace_payload(&missing_limit, "normalized-config.json", normalized.dump());
+    break;
+  }
+  auto limit_result = ModelBundle::create(std::move(missing_limit));
+  EXPECT_FALSE(limit_result);
+  EXPECT_EQ(limit_result.error().code, ErrorCode::invalid_model_bundle);
 }
 
 LIGHT_OCR_TEST(model_bundle_rejects_payload_hash_mismatch) {

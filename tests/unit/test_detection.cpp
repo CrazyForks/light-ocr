@@ -35,7 +35,11 @@ LIGHT_OCR_TEST(db_postprocess_finds_synthetic_rectangle) {
                                          size, detection_config(), ResourceLimits{});
   EXPECT_TRUE(result);
   EXPECT_EQ(result.value().contour_candidates, 1u);
+  EXPECT_EQ(result.value().total_contours, 1u);
   EXPECT_EQ(result.value().boxes.size(), 1u);
+  EXPECT_EQ(result.value().scores.size(), 1u);
+  EXPECT_NEAR(result.value().scores[0], 0.95, 0.001);
+  EXPECT_EQ(result.value().candidate_indices[0], 0u);
   EXPECT_TRUE(result.value().boxes[0].points[1].x > result.value().boxes[0].points[0].x);
 }
 
@@ -76,4 +80,11 @@ LIGHT_OCR_TEST(db_postprocess_enforces_candidate_limit) {
   EXPECT_TRUE(result);
   EXPECT_EQ(result.value().contour_candidates, 1u);
   EXPECT_TRUE(result.value().boxes.size() <= 1u);
+  EXPECT_EQ(result.value().total_contours, 2u);
+
+  auto strict = internal::db_postprocess(
+      map.data(), map.size(), {1, 1, size, size}, size, size, config,
+      ResourceLimits{}, false, true);
+  EXPECT_FALSE(strict);
+  EXPECT_EQ(strict.error().code, ErrorCode::resource_limit_exceeded);
 }

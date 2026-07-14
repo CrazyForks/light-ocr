@@ -19,8 +19,9 @@
 namespace {
 
 const char* strategy_name(light_ocr::DetectionStrategy strategy) {
-  return strategy == light_ocr::DetectionStrategy::bounded ? "bounded"
-                                                            : "upstreamExact";
+  if (strategy == light_ocr::DetectionStrategy::bounded) return "bounded";
+  if (strategy == light_ocr::DetectionStrategy::tiled) return "tiled";
+  return "upstreamExact";
 }
 
 }  // namespace
@@ -61,7 +62,9 @@ int main(int argc, char** argv) {
       throw std::runtime_error(bundle.error().message + ": " +
                                bundle.error().detail);
     }
-    auto engine = light_ocr::Engine::create(std::move(bundle).value());
+    auto engine = light_ocr::Engine::create(
+        std::move(bundle).value(),
+        light_ocr::tools::engine_options_for_profile(arguments.profile));
     if (!engine) {
       throw std::runtime_error(engine.error().message + ": " +
                                engine.error().detail);
@@ -86,13 +89,24 @@ int main(int argc, char** argv) {
         diagnostics.accepted_boxes >= arguments.minimum_boxes &&
         (!arguments.maximum_boxes ||
          diagnostics.accepted_boxes <= *arguments.maximum_boxes);
-    const auto runtime_passed =
-        info.detection_strategy == light_ocr::DetectionStrategy::bounded &&
-        info.detection_max_side == 960 &&
-        info.default_recognition_batch_size == 1;
-    const auto detection_shape_passed =
-        diagnostics.detection_input_width == 960 &&
-        diagnostics.detection_input_height == 960;
+    const auto tiled = arguments.profile == "tiled_v1";
+    const auto runtime_passed = tiled
+                                    ? info.detection_strategy ==
+                                              light_ocr::DetectionStrategy::tiled &&
+                                          info.detection_max_side == 1280 &&
+                                          info.tiled_detection.has_value() &&
+                                          info.tiled_detection->contract_version == "tiled-v1"
+                                    : info.detection_strategy ==
+                                              light_ocr::DetectionStrategy::bounded &&
+                                          info.detection_max_side == 960 &&
+                                          info.default_recognition_batch_size == 1;
+    const auto detection_shape_passed = tiled
+                                            ? diagnostics.detection_input_width <= 1280 &&
+                                                  diagnostics.detection_input_height <= 1280 &&
+                                                  !diagnostics.detection_passes.empty() &&
+                                                  diagnostics.max_live_detection_pass_buffers == 1
+                                            : diagnostics.detection_input_width == 960 &&
+                                                  diagnostics.detection_input_height == 960;
     bool batch_shapes_passed = true;
     nlohmann::json batch_shapes = nlohmann::json::array();
     for (const auto& shape : diagnostics.recognition_batch_shapes) {
@@ -103,9 +117,19 @@ int main(int argc, char** argv) {
     const auto passed = boxes_passed && runtime_passed &&
                         detection_shape_passed && batch_shapes_passed &&
                         peak_passed;
+    nlohmann::json detection_passes = nlohmann::json::array();
+    for (const auto& pass : diagnostics.detection_passes) {
+      detection_passes.push_back({{"tileOrdinal", pass.tile_ordinal},
+                                  {"roi", {pass.x, pass.y, pass.width, pass.height}},
+                                  {"tensorShape", {1, 3, pass.tensor_height,
+                                                    pass.tensor_width}},
+                                  {"contourCandidates", pass.contour_candidates},
+                                  {"rawCandidates", pass.raw_candidates}});
+    }
     nlohmann::json report = {
         {"schemaVersion", "1.0"},
         {"passed", passed},
+        {"profile", arguments.profile},
         {"modelBundleId", info.model_bundle_id},
         {"image", {{"width", arguments.target_width},
                    {"height", arguments.target_height}}},
@@ -114,6 +138,12 @@ int main(int argc, char** argv) {
                      {"recognitionBatchSize", info.default_recognition_batch_size}}},
         {"result", {{"acceptedBoxes", diagnostics.accepted_boxes},
                     {"acceptedLines", result.value().lines.size()},
+                    {"rawDetectionBoxes", diagnostics.raw_detection_boxes},
+                    {"suppressedDuplicateBoxes",
+                     diagnostics.suppressed_duplicate_boxes},
+                    {"maxLiveDetectionPassBuffers",
+                     diagnostics.max_live_detection_pass_buffers},
+                    {"detectionPasses", std::move(detection_passes)},
                     {"detectionInputShape",
                      {1, 3, diagnostics.detection_input_height,
                       diagnostics.detection_input_width}},

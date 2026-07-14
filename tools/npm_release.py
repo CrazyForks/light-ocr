@@ -17,7 +17,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLE_ID = "ppocrv6-small-onnx-20260714.1"
+BUNDLE_ID = "ppocrv6-small-onnx-20260714.2"
 MODEL_PACKAGE = "@arcships/light-ocr-model-ppocrv6-small"
 FACADE_PACKAGE = "@arcships/light-ocr"
 NPM_REGISTRY = "https://registry.npmjs.org/"
@@ -238,6 +238,8 @@ def assemble(arguments: argparse.Namespace) -> None:
     if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", arguments.version):
         raise RuntimeError("version must be a plain stable SemVer value")
     version = arguments.version
+    if tuple(int(part) for part in version.split(".")) < (0, 2, 0):
+        raise RuntimeError("tiled-v1 packages require version 0.2.0 or newer")
     output = arguments.output_dir.resolve()
     native_root = arguments.native_root.resolve()
     bundle = arguments.bundle.resolve()
@@ -246,6 +248,12 @@ def assemble(arguments: argparse.Namespace) -> None:
     manifest = read_json(bundle / "manifest.json")
     if manifest.get("bundleId") != BUNDLE_ID:
         raise RuntimeError("model bundle ID does not match the npm release contract")
+    normalized_config = read_json(bundle / manifest["normalizedConfigPath"])
+    tiled_contract = normalized_config.get("runtimeProfiles", {}).get("tiled", {})
+    if (manifest.get("schemaVersion") != "1.0" or
+            normalized_config.get("schemaVersion") != "1.2" or
+            tiled_contract.get("contractVersion") != "tiled-v1"):
+        raise RuntimeError("model bundle does not contain the tiled-v1 release contract")
 
     facade = output / "facade"
     facade.mkdir()
@@ -301,7 +309,9 @@ def assemble(arguments: argparse.Namespace) -> None:
             "exports": {"./bundle/manifest.json": "./bundle/manifest.json"},
             "lightOcr": {
                 "bundleId": BUNDLE_ID,
-                "bundleSchemaVersion": "1.1",
+                "manifestSchemaVersion": manifest["schemaVersion"],
+                "normalizedConfigSchemaVersion": normalized_config["schemaVersion"],
+                "tiledContractVersion": tiled_contract["contractVersion"],
                 "paddleOcrRevision": "b03f46425e8ff4442b268ce449e3eef758146cd4",
             },
         }

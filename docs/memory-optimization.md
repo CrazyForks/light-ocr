@@ -1,6 +1,6 @@
 # light-ocr 高分辨率内存优化设计
 
-状态：第一阶段已实现并通过四平台 release CI；`tiled` 第二阶段待完成
+状态：第一阶段已发布；`tiled` 第二阶段 Core/Node 已实现，完整质量与四平台基线验收进行中
 
 Tiled authority：[Tiled Detection 技术设计与验收规格](tiled-design-and-acceptance.md)。本文保留背景与高层方案；分块算法、runtime contract、API、语料、四平台门槛和完成定义以独立规格为准。
 
@@ -205,7 +205,7 @@ struct EngineOptions {
 };
 ```
 
-`tiled`、`tile_side` 和 `tile_overlap` 仍属于第二阶段，未进入当前 headers，避免在边界合并质量门槛完成前形成不稳定 API。
+`DetectionStrategy::tiled` 已进入 0.2.0 candidate headers；tile side、overlap 和 merge threshold 不作为用户旋钮，而由 schema 1.2 bundle 的 `tiled-v1` contract 固定。它尚未随 npm 版本发布。
 
 约束：
 
@@ -304,11 +304,11 @@ macOS arm64 首个实现门槛：
 4. **已完成**：增加 `DetectionStrategy`，实现默认 `bounded/960`，保留显式 `upstream_exact`。
 5. **已完成**：更新 normalized config schema、bundle ID/revision、C++/Node 类型和 `EngineInfo`。
 6. **已完成（本地）**：建立 `bounded_default` Python oracle 与独立 goldens，完成 quality/parity 回归。
-7. **待第二阶段**：按 [独立 tiled 规格](tiled-design-and-acceptance.md) 实现 `tiled-v1`、全局 merge 和 tile-boundary corpus。
+7. **进行中**：`tiled-v1` planner、顺序 detection、全局 merge、Core/Node contract 与资源工具已实现；tile-boundary corpus、独立 oracle 和四平台 accepted baseline 待完成。
 8. 执行 ORT arena/memory-pattern/thread A/B，锁定最终 backend 选项。
 9. 在四个平台保存 absolute peak、steady RSS、latency 和 release baselines。
 
-步骤 2、4、6 和 macOS arm64 bounded memory gates 已完成；其他 Tier 1 平台仍需保存各自 absolute baseline。步骤 7 未完成前，不公开 `tiled`，也不对原尺寸小文字准确模式作承诺。
+步骤 2、4、6 已完成。步骤 7 的代码主链路已经在本机通过 2048 blank/dense/boundary 验证，但完整质量与四平台证据未完成；在独立规格的 checklist 全绿前不公开 `tiled`，也不对原尺寸小文字准确模式作承诺。
 
 ## 12. 被拒绝的替代方案
 

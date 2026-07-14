@@ -17,10 +17,11 @@
 namespace {
 
 void run_cycle(const std::vector<light_ocr::BundleFile>& files,
-               const light_ocr::ImageView& image) {
+               const light_ocr::ImageView& image,
+               const light_ocr::EngineOptions& options) {
   auto bundle = light_ocr::ModelBundle::create(files);
   if (!bundle) throw std::runtime_error(bundle.error().message + ": " + bundle.error().detail);
-  auto engine = light_ocr::Engine::create(std::move(bundle).value());
+  auto engine = light_ocr::Engine::create(std::move(bundle).value(), options);
   if (!engine) throw std::runtime_error(engine.error().message + ": " + engine.error().detail);
   auto result = engine.value()->recognize(image);
   if (!result) throw std::runtime_error(result.error().message + ": " + result.error().detail);
@@ -33,17 +34,21 @@ int main(int argc, char** argv) {
   try {
     const auto arguments = light_ocr::tools::parse_arguments(argc, argv, true);
     const auto files = light_ocr::tools::load_bundle_directory(arguments.bundle);
+    const auto engine_options =
+        light_ocr::tools::engine_options_for_profile(arguments.profile);
     auto pixels = light_ocr::tools::read_binary_file(arguments.pixels);
     const light_ocr::ImageView image{pixels.data(), pixels.size(), arguments.width,
                                      arguments.height, arguments.stride, arguments.format};
-    for (std::uint32_t index = 0; index < arguments.warmup; ++index) run_cycle(files, image);
+    for (std::uint32_t index = 0; index < arguments.warmup; ++index) {
+      run_cycle(files, image, engine_options);
+    }
 
     light_ocr::tools::release_unused_memory();
     const auto baseline = light_ocr::tools::resident_memory_bytes();
     std::vector<std::uint64_t> resident;
     resident.reserve(arguments.iterations);
     for (std::uint32_t index = 0; index < arguments.iterations; ++index) {
-      run_cycle(files, image);
+      run_cycle(files, image, engine_options);
       light_ocr::tools::release_unused_memory();
       resident.push_back(light_ocr::tools::resident_memory_bytes());
     }
@@ -58,6 +63,7 @@ int main(int argc, char** argv) {
     const bool passed = growth <= maximum_growth && per_cycle <= maximum_per_cycle;
     const auto report = nlohmann::json({
         {"schemaVersion", "1.0"}, {"ok", true}, {"passed", passed},
+        {"profile", arguments.profile},
         {"warmupCycles", arguments.warmup}, {"measuredCycles", arguments.iterations},
         {"residentBytes", {{"baseline", baseline}, {"minimum", *minmax.first},
                            {"maximum", *minmax.second}, {"final", resident.back()},

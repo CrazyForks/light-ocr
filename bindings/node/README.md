@@ -49,7 +49,7 @@ macOS/Linux 产物在 `build-node/bin/light_ocr_node.node`，锁定的 ONNX Runt
 
 ```bash
 export LIGHT_OCR_NODE_BINARY="$PWD/build-node/bin/light_ocr_node.node"
-export LIGHT_OCR_MODEL_BUNDLE="$PWD/models/generated/ppocrv6-small-onnx-20260714.1"
+export LIGHT_OCR_MODEL_BUNDLE="$PWD/models/generated/ppocrv6-small-onnx-20260714.2"
 
 node --test --test-concurrency=1 bindings/node/test/adapter.test.cjs
 # 或：ctest --test-dir build-node -R '^light_ocr_node_tests$' --output-on-failure

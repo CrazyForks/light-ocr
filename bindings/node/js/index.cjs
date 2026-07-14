@@ -7,7 +7,7 @@ const { loadNative } = require('./load-native.cjs');
 
 const DEFAULT_MODEL = 'ppocrv6-small';
 const MODEL_PACKAGE = '@arcships/light-ocr-model-ppocrv6-small';
-const EXPECTED_BUNDLE_ID = 'ppocrv6-small-onnx-20260714.1';
+const EXPECTED_BUNDLE_ID = 'ppocrv6-small-onnx-20260714.2';
 
 class OcrError extends Error {
   constructor(code, message, detail) {

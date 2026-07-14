@@ -79,7 +79,7 @@ class BootstrapModelsTest(unittest.TestCase):
 
     def test_normalized_config_separates_source_defaults_and_ceilings(self) -> None:
         config = bootstrap_models.normalized_config("test-bundle", 18_709)
-        self.assertEqual(config["schemaVersion"], "1.1")
+        self.assertEqual(config["schemaVersion"], "1.2")
         self.assertEqual(config["sourceDetectionResize"]["limitType"], "min")
         self.assertEqual(config["sourceDetectionResize"]["maxSideLimit"], 4_000)
         self.assertEqual(
@@ -95,6 +95,10 @@ class BootstrapModelsTest(unittest.TestCase):
             },
         )
         self.assertEqual(config["resourceLimits"]["maxRecognitionBatchSize"], 8)
+        self.assertEqual(config["resourceLimits"]["maxDetectionTiles"], 100)
+        self.assertEqual(
+            config["runtimeProfiles"]["tiled"]["contractVersion"], "tiled-v1"
+        )
         self.assertNotIn("resize", config["detection"])
         self.assertNotIn("defaultSize", config["recognition"]["batch"])
 

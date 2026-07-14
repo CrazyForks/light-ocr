@@ -24,7 +24,10 @@ struct DetectionCandidateTrace {
 
 struct DetectionBoxes {
   std::vector<Quad> boxes;
+  std::vector<float> scores;
+  std::vector<std::uint32_t> candidate_indices;
   std::uint32_t contour_candidates = 0;
+  std::uint32_t total_contours = 0;
   std::string threshold_bitmap_sha256;
   std::vector<DetectionCandidateTrace> traces;
 };
@@ -35,6 +38,7 @@ Result<DetectionBoxes> db_postprocess(const float* probabilities, std::size_t el
                                       std::uint32_t original_height,
                                       const DetectionConfig& config,
                                       const ResourceLimits& limits,
-                                      bool include_trace = false);
+                                      bool include_trace = false,
+                                      bool reject_candidate_overflow = false);
 
 }  // namespace light_ocr::internal

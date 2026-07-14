@@ -287,11 +287,16 @@ ResourceLimits parse_resource_limits(napi_env env, napi_value value) {
   const std::unordered_set<std::string> allowed{
       "maxWidth",          "maxHeight",          "maxPixels",
       "maxDetectionSide", "maxDetectionCandidates", "maxRecognitionBatchSize",
-      "maxRecognitionWidth", "maxTemporaryBytes"};
+      "maxDetectionTiles", "maxRecognitionWidth", "maxTemporaryBytes"};
   reject_unknown_properties(env, value, allowed, "reducedLimits");
-  for (const auto& name : allowed) {
-    if (!has_own(env, value, name.c_str())) {
-      throw AddonFailure("invalid_argument", "reducedLimits must contain all eight fields");
+  const std::array<const char*, 8> required{
+      "maxWidth",          "maxHeight",          "maxPixels",
+      "maxDetectionSide", "maxDetectionCandidates", "maxRecognitionBatchSize",
+      "maxRecognitionWidth", "maxTemporaryBytes"};
+  for (const auto* name : required) {
+    if (!has_own(env, value, name)) {
+      throw AddonFailure("invalid_argument",
+                         "reducedLimits must contain all legacy fields");
     }
   }
   ResourceLimits limits;
@@ -302,6 +307,10 @@ ResourceLimits parse_resource_limits(napi_env env, napi_value value) {
       get_u32(env, get_named(env, value, "maxDetectionSide"), "maxDetectionSide", 1);
   limits.max_detection_candidates = get_u32(
       env, get_named(env, value, "maxDetectionCandidates"), "maxDetectionCandidates", 1);
+  if (const auto option = optional_named(env, value, "maxDetectionTiles")) {
+    limits.max_detection_tiles =
+        get_u32(env, *option, "maxDetectionTiles", 1);
+  }
   limits.max_recognition_batch_size = get_u32(
       env, get_named(env, value, "maxRecognitionBatchSize"), "maxRecognitionBatchSize", 1);
   limits.max_recognition_width = get_u32(
@@ -315,9 +324,10 @@ ResourceLimits parse_resource_limits(napi_env env, napi_value value) {
 DetectionStrategy parse_detection_strategy(napi_env env, napi_value value) {
   const auto strategy = get_string(env, value, "detection.strategy");
   if (strategy == "bounded") return DetectionStrategy::bounded;
+  if (strategy == "tiled") return DetectionStrategy::tiled;
   if (strategy == "upstreamExact") return DetectionStrategy::upstream_exact;
   throw AddonFailure("invalid_argument",
-                     "detection.strategy must be bounded or upstreamExact");
+                     "detection.strategy must be bounded, tiled, or upstreamExact");
 }
 
 DetectionOptions parse_detection_options(napi_env env, napi_value value) {
@@ -941,6 +951,7 @@ napi_value create_timing(napi_env env, const Timing& timing) {
   set("detectionPreprocess", timing.detection_preprocess_us);
   set("detectionInference", timing.detection_inference_us);
   set("detectionPostprocess", timing.detection_postprocess_us);
+  set("detectionMerge", timing.detection_merge_us);
   set("cropAndSort", timing.crop_and_sort_us);
   set("recognitionPreprocess", timing.recognition_preprocess_us);
   set("recognitionInference", timing.recognition_inference_us);
@@ -986,6 +997,38 @@ napi_value create_diagnostics(napi_env env, const Diagnostics& diagnostics) {
             uint32_value(env, diagnostics.detection_input_width));
   set_named(env, object, "detectionInputHeight",
             uint32_value(env, diagnostics.detection_input_height));
+  set_named(env, object, "rawDetectionBoxes",
+            uint32_value(env, diagnostics.raw_detection_boxes));
+  set_named(env, object, "suppressedDuplicateBoxes",
+            uint32_value(env, diagnostics.suppressed_duplicate_boxes));
+  set_named(env, object, "maxLiveDetectionPassBuffers",
+            uint32_value(env, diagnostics.max_live_detection_pass_buffers));
+  napi_value detection_passes = nullptr;
+  check(env,
+        napi_create_array_with_length(env, diagnostics.detection_passes.size(),
+                                      &detection_passes),
+        "create detection pass shapes");
+  for (std::size_t index = 0; index < diagnostics.detection_passes.size(); ++index) {
+    const auto& shape = diagnostics.detection_passes[index];
+    napi_value entry = nullptr;
+    check(env, napi_create_object(env, &entry), "create detection pass shape");
+    set_named(env, entry, "tileOrdinal", uint32_value(env, shape.tile_ordinal));
+    set_named(env, entry, "x", uint32_value(env, shape.x));
+    set_named(env, entry, "y", uint32_value(env, shape.y));
+    set_named(env, entry, "width", uint32_value(env, shape.width));
+    set_named(env, entry, "height", uint32_value(env, shape.height));
+    set_named(env, entry, "tensorWidth", uint32_value(env, shape.tensor_width));
+    set_named(env, entry, "tensorHeight", uint32_value(env, shape.tensor_height));
+    set_named(env, entry, "contourCandidates",
+              uint32_value(env, shape.contour_candidates));
+    set_named(env, entry, "rawCandidates",
+              uint32_value(env, shape.raw_candidates));
+    check(env,
+          napi_set_element(env, detection_passes,
+                           static_cast<std::uint32_t>(index), entry),
+          "set detection pass shape");
+  }
+  set_named(env, object, "detectionPasses", detection_passes);
   napi_value batch_shapes = nullptr;
   check(env,
         napi_create_array_with_length(env, diagnostics.recognition_batch_shapes.size(),
@@ -1038,6 +1081,8 @@ napi_value create_resource_limits(napi_env env, const ResourceLimits& limits) {
   set_named(env, object, "maxDetectionSide", uint32_value(env, limits.max_detection_side));
   set_named(env, object, "maxDetectionCandidates",
             uint32_value(env, limits.max_detection_candidates));
+  set_named(env, object, "maxDetectionTiles",
+            uint32_value(env, limits.max_detection_tiles));
   set_named(env, object, "maxRecognitionBatchSize",
             uint32_value(env, limits.max_recognition_batch_size));
   set_named(env, object, "maxRecognitionWidth",
@@ -1056,6 +1101,8 @@ napi_value create_engine_info(napi_env env, const EngineState& engine) {
   set_named(env, object, "modelBundleId", string_value(env, info.model_bundle_id));
   set_named(env, object, "modelBundleSchemaVersion",
             string_value(env, info.model_bundle_schema_version));
+  set_named(env, object, "normalizedConfigSchemaVersion",
+            string_value(env, info.normalized_config_schema_version));
   set_named(env, object, "backend", string_value(env, info.backend));
   set_named(env, object, "executionProvider", string_value(env, info.execution_provider));
   napi_value capabilities = nullptr;
@@ -1064,6 +1111,8 @@ napi_value create_engine_info(napi_env env, const EngineState& engine) {
   set_named(env, capabilities, "recognition", boolean_value(env, info.capabilities.recognition));
   set_named(env, capabilities, "textlineOrientation",
             boolean_value(env, info.capabilities.textline_orientation));
+  set_named(env, capabilities, "tiledDetection",
+            boolean_value(env, info.capabilities.tiled_detection));
   set_named(env, object, "capabilities", capabilities);
   set_named(env, object, "concurrencyMode", string_value(env, "serialized_reject_when_busy"));
   set_named(env, object, "limits", create_resource_limits(env, info.limits));
@@ -1072,9 +1121,29 @@ napi_value create_engine_info(napi_env env, const EngineState& engine) {
   set_named(env, object, "detectionStrategy",
             string_value(env, info.detection_strategy == DetectionStrategy::bounded
                                   ? "bounded"
+                                  : info.detection_strategy == DetectionStrategy::tiled
+                                        ? "tiled"
                                   : "upstreamExact"));
   set_named(env, object, "detectionMaxSide",
             uint32_value(env, info.detection_max_side));
+  if (info.tiled_detection) {
+    napi_value tiled = nullptr;
+    check(env, napi_create_object(env, &tiled), "create tiled detection info");
+    set_named(env, tiled, "contractVersion",
+              string_value(env, info.tiled_detection->contract_version));
+    set_named(env, tiled, "tileSide",
+              uint32_value(env, info.tiled_detection->tile_side));
+    set_named(env, tiled, "minimumOverlap",
+              uint32_value(env, info.tiled_detection->minimum_overlap));
+    set_named(env, tiled, "artificialBoundaryMargin",
+              uint32_value(env,
+                           info.tiled_detection->artificial_boundary_margin));
+    set_named(env, tiled, "mergeIouThreshold",
+              double_value(env, info.tiled_detection->merge_iou_threshold));
+    set_named(env, tiled, "mergeIosThreshold",
+              double_value(env, info.tiled_detection->merge_ios_threshold));
+    set_named(env, object, "tiledDetection", tiled);
+  }
   set_named(env, object, "defaultRecognitionScoreThreshold",
             double_value(env, info.default_recognition_score_threshold));
   set_named(env, object, "defaultRecognitionBatchSize",

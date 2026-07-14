@@ -54,7 +54,7 @@ jobs:
         run: >-
           python tools/run_offline_check.py
           --validate build-ci/bin/light_ocr_validate${{ matrix.executable_suffix }}
-          --bundle models/generated/ppocrv6-small-onnx-20260714.1
+          --bundle models/generated/ppocrv6-small-onnx-20260714.2
           --fixture corpus/fixtures/generated-hello-123/fixture.json
       - name: Runtime check with the network namespace disabled
         if: matrix.id == 'linux-x64'
@@ -63,18 +63,34 @@ jobs:
           sudo unshare --net --
           python3 tools/run_offline_check.py
           --validate build-ci/bin/light_ocr_validate${{ matrix.executable_suffix }}
-          --bundle models/generated/ppocrv6-small-onnx-20260714.1
+          --bundle models/generated/ppocrv6-small-onnx-20260714.2
           --fixture corpus/fixtures/generated-hello-123/fixture.json
           --require-network-disabled
       - name: Repeated lifecycle RSS gate
         shell: bash
         run: >-
           ./build-ci/bin/light_ocr_leak_check${{ matrix.executable_suffix }}
-          --bundle models/generated/ppocrv6-small-onnx-20260714.1
+          --bundle models/generated/ppocrv6-small-onnx-20260714.2
           --pixels corpus/fixtures/generated-hello-123/pixels.bin
           --width 800 --height 180 --stride 2400 --format bgr8
           --warmup 5 --iterations 10
           --report reports/release/${{ matrix.id }}/leak.json
+      - name: Tiled lifecycle and latency characterization
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          ./build-ci/bin/light_ocr_leak_check${{ matrix.executable_suffix }} \
+            --bundle models/generated/ppocrv6-small-onnx-20260714.2 \
+            --pixels corpus/fixtures/paddleocr-xfund-form/pixels.bin \
+            --width 1488 --height 2105 --stride 4464 --format bgr8 \
+            --profile tiled_v1 --warmup 2 --iterations 10 \
+            --report reports/release/${{ matrix.id }}/tiled-leak.json
+          ./build-ci/bin/light_ocr_benchmark${{ matrix.executable_suffix }} \
+            --bundle models/generated/ppocrv6-small-onnx-20260714.2 \
+            --pixels corpus/fixtures/paddleocr-xfund-form/pixels.bin \
+            --width 1488 --height 2105 --stride 4464 --format bgr8 \
+            --profile tiled_v1 --warmup 5 --iterations 10 \
+            --report reports/release/${{ matrix.id }}/tiled-latency.json
       - name: Generate build manifest, licenses, and SPDX SBOM
         shell: bash
         run: python tools/generate_release_metadata.py --build-dir build-ci --output-dir reports/release/${{ matrix.id }} --platform-id ${{ matrix.id }} --configuration Release
@@ -88,6 +104,7 @@ jobs:
             build-ci/**/light_ocr_core.lib
             build-ci/**/liblight_ocr_core.a
             reports/release/${{ matrix.id }}
+            build-ci/reports/tiled
 
   safety:
     runs-on: ubuntu-24.04
@@ -116,7 +133,7 @@ jobs:
           ./build-fuzz/bin/light_ocr_fuzz_image -runs=100000
           ./build-fuzz/bin/light_ocr_fuzz_bundle -runs=100000
           ./build-fuzz/bin/light_ocr_fuzz_geometry -runs=100000
-          LIGHT_OCR_MODEL_BUNDLE="$PWD/models/generated/ppocrv6-small-onnx-20260714.1" ./build-fuzz/bin/light_ocr_fuzz_lifecycle -runs=10 -max_len=64
+          LIGHT_OCR_MODEL_BUNDLE="$PWD/models/generated/ppocrv6-small-onnx-20260714.2" ./build-fuzz/bin/light_ocr_fuzz_lifecycle -runs=10 -max_len=64
 
   oracle:
     runs-on: ubuntu-24.04
@@ -141,7 +158,7 @@ jobs:
         run: >-
           python oracle/run_benchmark.py
           --native-benchmark build-oracle/bin/light_ocr_benchmark
-          --bundle models/generated/ppocrv6-small-onnx-20260714.1
+          --bundle models/generated/ppocrv6-small-onnx-20260714.2
           --fixture corpus/fixtures/generated-hello-123/fixture.json
           --warmup 5 --iterations 30
           --report build-oracle/reports/benchmark/linux-x64.json

@@ -1,11 +1,11 @@
 # light-ocr Native C++ API
 
-Status: Implemented source contract for Core 0.1.0  
+Status: Core 0.1.0 published; additive Core 0.2.0 tiled candidate implemented but not released<br>
 Authority: public C++ source contract, ownership, lifecycle, errors, and compatibility  
 Requirements: [requirements.md](requirements.md)  
 Architecture: [architecture.md](architecture.md)
 
-The declarations below include the implemented bounded-detection and streaming-recognition contract. The deferred tiled mode is specified in the draft [Tiled Detection design and acceptance specification](tiled-design-and-acceptance.md); its memory background remains in [memory-optimization.md](memory-optimization.md). Proposed tiled declarations are not part of Core 0.1.0.
+The declarations below track the current source tree, including the additive tiled candidate. The released 0.1.0 API contains only bounded/upstream detection; `DetectionStrategy::tiled` must not be treated as a published capability until the [Tiled Detection completion checklist](tiled-design-and-acceptance.md#14-完成定义) passes.
 
 ## 1. Scope
 
@@ -196,6 +196,18 @@ struct RecognitionBatchShape {
   std::uint32_t width = 0;
 };
 
+struct DetectionPassShape {
+  std::uint32_t tile_ordinal = 0;
+  std::uint32_t x = 0;
+  std::uint32_t y = 0;
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint32_t tensor_width = 0;
+  std::uint32_t tensor_height = 0;
+  std::uint32_t contour_candidates = 0;
+  std::uint32_t raw_candidates = 0;
+};
+
 struct Diagnostics {
   std::vector<RejectedLine> rejected_lines;
   std::vector<DiagnosticWarning> warnings;
@@ -203,6 +215,10 @@ struct Diagnostics {
   std::uint32_t accepted_boxes = 0;
   std::uint32_t detection_input_width = 0;
   std::uint32_t detection_input_height = 0;
+  std::uint32_t raw_detection_boxes = 0;
+  std::uint32_t suppressed_duplicate_boxes = 0;
+  std::uint32_t max_live_detection_pass_buffers = 0;
+  std::vector<DetectionPassShape> detection_passes;
   std::vector<RecognitionBatchShape> recognition_batch_shapes;
 };
 
@@ -212,6 +228,7 @@ struct Timing {
   std::uint64_t detection_preprocess_us = 0;
   std::uint64_t detection_inference_us = 0;
   std::uint64_t detection_postprocess_us = 0;
+  std::uint64_t detection_merge_us = 0;
   std::uint64_t crop_and_sort_us = 0;
   std::uint64_t recognition_preprocess_us = 0;
   std::uint64_t recognition_inference_us = 0;
@@ -238,7 +255,7 @@ Geometry rules:
 - Confidence is finite and in `[0, 1]`.
 - Text is valid UTF-8.
 
-Diagnostics are absent unless requested. They contain tensor shapes for parity and memory attribution, but no raw pixels or tensor values.
+Diagnostics are absent unless requested. They contain tensor shapes for parity and memory attribution, but no raw pixels or tensor values. In tiled mode, `detection_passes` is the row-major plan actually executed, `max_live_detection_pass_buffers` must be `1`, and `raw_detection_boxes - suppressed_duplicate_boxes == accepted_boxes`. The legacy aggregate input width/height are the maximum tensor dimensions across passes.
 
 ## 7. Options and limits
 
@@ -251,6 +268,7 @@ struct ResourceLimits {
   std::uint64_t max_pixels = 40'000'000;
   std::uint32_t max_detection_side = 4'000;
   std::uint32_t max_detection_candidates = 3'000;
+  std::uint32_t max_detection_tiles = 100;
   std::uint32_t max_recognition_batch_size = 8;
   std::uint32_t max_recognition_width = 3'200;
   std::uint64_t max_temporary_bytes = 512ull * 1024 * 1024;
@@ -259,6 +277,7 @@ struct ResourceLimits {
 
 enum class DetectionStrategy {
   bounded,
+  tiled,
   upstream_exact,
 };
 
@@ -294,6 +313,8 @@ Rules:
 - Batch sizes are positive and no larger than the effective limit.
 - `bounded` defaults to side 960; its side is a positive 32 multiple no larger than the effective detection ceiling.
 - `upstream_exact` uses the source 4,000 ceiling and cannot carry a separate `max_side`.
+- `tiled` is selected only at engine creation, requires a validated `tiled-v1` bundle profile, reports pass side 1280, and rejects both engine and request side overrides.
+- `max_detection_candidates` is a whole-image ceiling for tiled passes; overflow fails the request instead of returning a truncated result. `max_detection_tiles` is planned and checked before the first inference.
 - A request may lower a bounded engine's side; it cannot raise it or change strategy.
 - Engine limits may only reduce bundle limits.
 - `max_temporary_bytes` bounds Core-owned converted images, crops, and input tensor buffers with checked arithmetic. ONNX Runtime's internal allocator/workspace is controlled by the pinned backend but is not included in this preflight counter; repeated lifecycle RSS and platform memory reports cover that process-level behavior.
@@ -313,12 +334,23 @@ struct Capabilities {
   bool detection = true;
   bool recognition = true;
   bool textline_orientation = false;
+  bool tiled_detection = false;
+};
+
+struct TiledDetectionInfo {
+  std::string contract_version;
+  std::uint32_t tile_side = 0;
+  std::uint32_t minimum_overlap = 0;
+  std::uint32_t artificial_boundary_margin = 0;
+  float merge_iou_threshold = 0;
+  float merge_ios_threshold = 0;
 };
 
 struct EngineInfo {
   std::string core_version;
   std::string model_bundle_id;
   std::string model_bundle_schema_version;
+  std::string normalized_config_schema_version;
   std::string backend;
   std::string execution_provider;
   Capabilities capabilities;
@@ -328,6 +360,7 @@ struct EngineInfo {
   std::uint32_t inter_op_threads = 1;
   DetectionStrategy detection_strategy = DetectionStrategy::bounded;
   std::uint32_t detection_max_side = 960;
+  std::optional<TiledDetectionInfo> tiled_detection;
   float default_recognition_score_threshold = 0;
   std::uint32_t default_recognition_batch_size = 1;
 };

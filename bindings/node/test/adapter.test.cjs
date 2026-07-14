@@ -12,7 +12,7 @@ const { createEngine, OcrError } = require('../js/index.cjs');
 const repositoryRoot = path.resolve(__dirname, '../../..');
 const bundlePath = path.resolve(
   process.env.LIGHT_OCR_MODEL_BUNDLE ||
-    path.join(repositoryRoot, 'models/generated/ppocrv6-small-onnx-20260714.1'),
+    path.join(repositoryRoot, 'models/generated/ppocrv6-small-onnx-20260714.2'),
 );
 
 function loadFixture(id) {
@@ -39,12 +39,16 @@ test('ESM and CommonJS facades expose the same API', async () => {
 
 test('loads PP-OCRv6, snapshots pixels, maps results, and closes idempotently', async () => {
   const engine = await createEngine({ bundlePath });
-  assert.equal(engine.info.modelBundleId, 'ppocrv6-small-onnx-20260714.1');
+  assert.equal(engine.info.modelBundleId, 'ppocrv6-small-onnx-20260714.2');
+  assert.equal(engine.info.normalizedConfigSchemaVersion, '1.2');
   assert.equal(engine.info.detectionStrategy, 'bounded');
   assert.equal(engine.info.detectionMaxSide, 960);
   assert.equal(engine.info.defaultRecognitionBatchSize, 1);
   assert.equal(engine.info.adapter.scheduler, 'dedicated_fifo');
   assert.equal(engine.info.limits.maxConcurrentCalls, 1);
+  assert.equal(engine.info.limits.maxDetectionTiles, 100);
+  assert.equal(engine.info.capabilities.tiledDetection, true);
+  assert.equal(engine.info.tiledDetection, undefined);
   assert.ok(Object.isFrozen(engine.info));
   assert.ok(Object.isFrozen(engine.info.adapter));
 
@@ -62,6 +66,11 @@ test('loads PP-OCRv6, snapshots pixels, maps results, and closes idempotently', 
   assert.equal(result.diagnostics.acceptedBoxes, 1);
   assert.equal(result.diagnostics.detectionInputWidth, 800);
   assert.equal(result.diagnostics.detectionInputHeight, 192);
+  assert.equal(result.diagnostics.rawDetectionBoxes, 1);
+  assert.equal(result.diagnostics.suppressedDuplicateBoxes, 0);
+  assert.equal(result.diagnostics.maxLiveDetectionPassBuffers, 1);
+  assert.equal(result.diagnostics.detectionPasses.length, 1);
+  assert.equal(result.timingUs.detectionMerge, 0);
   assert.deepEqual(result.diagnostics.recognitionBatchShapes.map((shape) => shape.batchSize), [1]);
 
   const closeA = engine.close();
@@ -123,6 +132,22 @@ test('validates input and reports adapter errors as OcrError', async () => {
 });
 
 test('maps bounded request limits and explicit upstream-exact engine options', async () => {
+  const legacyReducedLimits = await createEngine({
+    bundlePath,
+    reducedLimits: {
+      maxWidth: 10_000,
+      maxHeight: 10_000,
+      maxPixels: 40_000_000,
+      maxDetectionSide: 4_000,
+      maxDetectionCandidates: 3_000,
+      maxRecognitionBatchSize: 8,
+      maxRecognitionWidth: 3_200,
+      maxTemporaryBytes: 512 * 1024 * 1024,
+    },
+  });
+  assert.equal(legacyReducedLimits.info.limits.maxDetectionTiles, 100);
+  await legacyReducedLimits.close();
+
   const bounded = await createEngine({ bundlePath });
   const image = loadFixture('generated-hello-123');
   const boundedResult = await bounded.recognize(image, { detectionMaxSide: 640 });
@@ -150,6 +175,50 @@ test('maps bounded request limits and explicit upstream-exact engine options', a
     }),
     (error) => error instanceof OcrError && error.code === 'invalid_argument',
   );
+});
+
+test('maps tiled-v1 engine identity, passes, merge diagnostics, and side rejection', async () => {
+  const tiled = await createEngine({
+    bundlePath,
+    detection: { strategy: 'tiled' },
+  });
+  assert.equal(tiled.info.detectionStrategy, 'tiled');
+  assert.equal(tiled.info.detectionMaxSide, 1280);
+  assert.equal(tiled.info.tiledDetection.contractVersion, 'tiled-v1');
+  assert.equal(tiled.info.tiledDetection.tileSide, 1280);
+  assert.equal(tiled.info.tiledDetection.minimumOverlap, 128);
+  assert.equal(tiled.info.tiledDetection.artificialBoundaryMargin, 32);
+  assert.equal(tiled.info.tiledDetection.mergeIouThreshold, 0.5);
+  assert.ok(Math.abs(tiled.info.tiledDetection.mergeIosThreshold - 0.8) < 1e-6);
+
+  const side = 2048;
+  const image = {
+    data: Buffer.alloc(side * side * 3, 255),
+    width: side,
+    height: side,
+    stride: side * 3,
+    pixelFormat: 'bgr8',
+  };
+  const result = await tiled.recognize(image, { includeDiagnostics: true });
+  assert.deepEqual(result.lines, []);
+  assert.equal(result.diagnostics.detectionPasses.length, 4);
+  assert.deepEqual(
+    result.diagnostics.detectionPasses.map(({ tileOrdinal, x, y }) => ({ tileOrdinal, x, y })),
+    [
+      { tileOrdinal: 0, x: 0, y: 0 },
+      { tileOrdinal: 1, x: 768, y: 0 },
+      { tileOrdinal: 2, x: 0, y: 768 },
+      { tileOrdinal: 3, x: 768, y: 768 },
+    ],
+  );
+  assert.equal(result.diagnostics.maxLiveDetectionPassBuffers, 1);
+  assert.equal(result.diagnostics.rawDetectionBoxes, 0);
+  assert.equal(result.diagnostics.suppressedDuplicateBoxes, 0);
+  await assert.rejects(
+    tiled.recognize(loadFixture('generated-blank'), { detectionMaxSide: 960 }),
+    (error) => error instanceof OcrError && error.code === 'invalid_argument',
+  );
+  await tiled.close();
 });
 
 test('secure bundle loading rejects a symbolic-link root', async (t) => {

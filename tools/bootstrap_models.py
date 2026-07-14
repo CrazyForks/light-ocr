@@ -19,7 +19,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "models" / "bundles.lock.json"
-DEFAULT_OUTPUT = ROOT / "models" / "generated" / "ppocrv6-small-onnx-20260714.1"
+DEFAULT_OUTPUT = ROOT / "models" / "generated" / "ppocrv6-small-onnx-20260714.2"
 
 
 def sha256(data: bytes) -> str:
@@ -140,7 +140,7 @@ def extract_dictionary(config: bytes) -> list[str]:
 
 def normalized_config(bundle_id: str, dictionary_entries: int) -> dict[str, object]:
     return {
-        "schemaVersion": "1.1",
+        "schemaVersion": "1.2",
         "bundleId": bundle_id,
         "resourceLimits": {
             "maxWidth": 10_000,
@@ -148,6 +148,7 @@ def normalized_config(bundle_id: str, dictionary_entries: int) -> dict[str, obje
             "maxPixels": 40_000_000,
             "maxDetectionSide": 4_000,
             "maxDetectionCandidates": 3_000,
+            "maxDetectionTiles": 100,
             "maxRecognitionBatchSize": 8,
             "maxRecognitionWidth": 3_200,
             "maxTemporaryBytes": 512 * 1024 * 1024,
@@ -172,6 +173,31 @@ def normalized_config(bundle_id: str, dictionary_entries: int) -> dict[str, obje
                 "dimensionMultipleRounding": "ceil",
             },
             "recognitionBatchSize": 1,
+        },
+        "runtimeProfiles": {
+            "tiled": {
+                "contractVersion": "tiled-v1",
+                "tileSide": 1_280,
+                "minimumOverlap": 128,
+                "dimensionMultiple": 32,
+                "dimensionMultipleRounding": "ceil_resize",
+                "artificialBoundaryMargin": 32,
+                "tileOrder": "row_major",
+                "merge": {
+                    "iouThreshold": 0.5,
+                    "intersectionOverSmallerThreshold": 0.8,
+                    "scope": "different_overlapping_tiles",
+                    "geometry": "select_representative",
+                    "selectionOrder": [
+                        "not_artificial_boundary",
+                        "higher_db_score",
+                        "farther_from_artificial_boundary",
+                        "lower_tile_ordinal",
+                        "lower_candidate_ordinal",
+                    ],
+                },
+                "recognition": "once_after_global_merge",
+            }
         },
         "detection": {
             "input": {"colorOrder": "BGR", "tensorLayout": "NCHW", "tensorType": "float32"},
@@ -275,7 +301,7 @@ def write_bundle(output: Path, cache_dir: Path, force: bool) -> None:
             "schemaVersion": "1.0",
             "bundleId": bundle["bundleId"],
             "family": "PP-OCRv6",
-            "coreCompatibility": {"minimum": "0.1.0", "maximumMajor": 0},
+            "coreCompatibility": {"minimum": "0.2.0", "maximumMajor": 0},
             "upstream": {
                 "repository": "https://github.com/PaddlePaddle/PaddleOCR",
                 "release": "v3.7.0",

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string_view>
 #include <utility>
@@ -51,11 +53,7 @@ int main(int argc, char** argv) {
     const auto load_end = std::chrono::steady_clock::now();
 
     const auto initialize_begin = std::chrono::steady_clock::now();
-    light_ocr::EngineOptions engine_options;
-    if (arguments.profile == "upstream_exact") {
-      engine_options.detection.strategy = light_ocr::DetectionStrategy::upstream_exact;
-      engine_options.recognition_batch_size = 8;
-    }
+    auto engine_options = light_ocr::tools::engine_options_for_profile(arguments.profile);
     auto engine = light_ocr::Engine::create(std::move(bundle).value(), engine_options);
     if (!engine) throw std::runtime_error(engine.error().message + ": " + engine.error().detail);
     const auto initialize_end = std::chrono::steady_clock::now();
@@ -71,7 +69,7 @@ int main(int argc, char** argv) {
     Samples wall;
     Samples total;
     Samples inference_only;
-    std::array<Samples, 8> stages;
+    std::array<Samples, 9> stages;
     Samples resident;
     wall.reserve(arguments.iterations);
     total.reserve(arguments.iterations);
@@ -82,6 +80,10 @@ int main(int argc, char** argv) {
     std::uint32_t detection_input_width = 0;
     std::uint32_t detection_input_height = 0;
     std::vector<light_ocr::RecognitionBatchShape> recognition_batch_shapes;
+    std::vector<light_ocr::DetectionPassShape> detection_passes;
+    std::uint32_t raw_detection_boxes = 0;
+    std::uint32_t suppressed_duplicate_boxes = 0;
+    std::uint32_t max_live_detection_pass_buffers = 0;
     light_ocr::RecognizeOptions recognize_options;
     recognize_options.include_diagnostics = true;
     for (auto& samples : stages) samples.reserve(arguments.iterations);
@@ -99,6 +101,12 @@ int main(int argc, char** argv) {
         detection_input_height = result.value().diagnostics->detection_input_height;
         recognition_batch_shapes =
             result.value().diagnostics->recognition_batch_shapes;
+        detection_passes = result.value().diagnostics->detection_passes;
+        raw_detection_boxes = result.value().diagnostics->raw_detection_boxes;
+        suppressed_duplicate_boxes =
+            result.value().diagnostics->suppressed_duplicate_boxes;
+        max_live_detection_pass_buffers =
+            result.value().diagnostics->max_live_detection_pass_buffers;
       }
       wall.push_back(elapsed_us(begin, end));
       total.push_back(timing.total_us);
@@ -107,16 +115,17 @@ int main(int argc, char** argv) {
       stages[1].push_back(timing.detection_preprocess_us);
       stages[2].push_back(timing.detection_inference_us);
       stages[3].push_back(timing.detection_postprocess_us);
-      stages[4].push_back(timing.crop_and_sort_us);
-      stages[5].push_back(timing.recognition_preprocess_us);
-      stages[6].push_back(timing.recognition_inference_us);
-      stages[7].push_back(timing.recognition_postprocess_us);
+      stages[4].push_back(timing.detection_merge_us);
+      stages[5].push_back(timing.crop_and_sort_us);
+      stages[6].push_back(timing.recognition_preprocess_us);
+      stages[7].push_back(timing.recognition_inference_us);
+      stages[8].push_back(timing.recognition_postprocess_us);
       resident.push_back(light_ocr::tools::resident_memory_bytes());
     }
 
-    constexpr std::array<std::string_view, 8> stage_names = {
+    constexpr std::array<std::string_view, 9> stage_names = {
         "inputValidation", "detectionPreprocess", "detectionInference",
-        "detectionPostprocess", "cropAndSort", "recognitionPreprocess",
+        "detectionPostprocess", "detectionMerge", "cropAndSort", "recognitionPreprocess",
         "recognitionInference", "recognitionPostprocess"};
     nlohmann::json stage_report = nlohmann::json::object();
     for (std::size_t index = 0; index < stages.size(); ++index) {
@@ -125,17 +134,28 @@ int main(int argc, char** argv) {
     const auto resident_minmax = std::minmax_element(resident.begin(), resident.end());
     const auto engine_info = engine.value()->info();
     const auto model_bundle_id = engine_info.model_bundle_id;
-    const auto detection_strategy =
-        engine_info.detection_strategy == light_ocr::DetectionStrategy::bounded
-            ? "bounded"
-            : "upstreamExact";
+    const auto detection_strategy = engine_info.detection_strategy ==
+                                            light_ocr::DetectionStrategy::bounded
+                                        ? "bounded"
+                                    : engine_info.detection_strategy ==
+                                              light_ocr::DetectionStrategy::tiled
+                                        ? "tiled"
+                                        : "upstreamExact";
     nlohmann::json recognition_shapes = nlohmann::json::array();
     for (const auto& shape : recognition_batch_shapes) {
       recognition_shapes.push_back({shape.batch_size, 3, shape.height, shape.width});
     }
+    nlohmann::json pass_report = nlohmann::json::array();
+    for (const auto& pass : detection_passes) {
+      pass_report.push_back({{"tileOrdinal", pass.tile_ordinal},
+                             {"roi", {pass.x, pass.y, pass.width, pass.height}},
+                             {"tensorShape", {1, 3, pass.tensor_height, pass.tensor_width}},
+                             {"contourCandidates", pass.contour_candidates},
+                             {"rawCandidates", pass.raw_candidates}});
+    }
     engine.value()->close();
 
-    std::cout << nlohmann::json({
+    const auto report = nlohmann::json({
         {"schemaVersion", "1.0"}, {"ok", true}, {"backend", "native-cpp"},
         {"modelBundleId", model_bundle_id}, {"modelBundleBytes", model_bundle_bytes},
         {"profile", arguments.profile},
@@ -144,6 +164,10 @@ int main(int argc, char** argv) {
                      {"recognitionBatchSize", engine_info.default_recognition_batch_size}}},
         {"result", {{"acceptedBoxes", accepted_boxes},
                     {"acceptedLines", accepted_lines},
+                    {"rawDetectionBoxes", raw_detection_boxes},
+                    {"suppressedDuplicateBoxes", suppressed_duplicate_boxes},
+                    {"maxLiveDetectionPassBuffers", max_live_detection_pass_buffers},
+                    {"detectionPasses", std::move(pass_report)},
                     {"detectionInputShape", {1, 3, detection_input_height,
                                               detection_input_width}},
                     {"recognitionBatchShapes", std::move(recognition_shapes)}}},
@@ -158,8 +182,15 @@ int main(int argc, char** argv) {
                          {"residentMaximum", *resident_minmax.second},
                          {"residentFinal", resident.back()},
                          {"peakResident", light_ocr::tools::peak_resident_memory_bytes()}}}})
-                     .dump()
-              << '\n';
+                            .dump() + "\n";
+    if (!arguments.report.empty()) {
+      const auto parent = arguments.report.parent_path();
+      if (!parent.empty()) std::filesystem::create_directories(parent);
+      std::ofstream stream(arguments.report, std::ios::binary | std::ios::trunc);
+      stream.exceptions(std::ios::badbit | std::ios::failbit);
+      stream << report;
+    }
+    std::cout << report;
     return 0;
   } catch (const std::exception& exception) {
     std::cout << nlohmann::json({{"schemaVersion", "1.0"}, {"ok", false},

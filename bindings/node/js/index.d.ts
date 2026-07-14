@@ -1,7 +1,7 @@
 /// <reference types="node" />
 
 export type PixelFormat = 'gray8' | 'rgb8' | 'bgr8' | 'rgba8';
-export type DetectionStrategy = 'bounded' | 'upstreamExact';
+export type DetectionStrategy = 'bounded' | 'tiled' | 'upstreamExact';
 export type BuiltInModel = 'ppocrv6-small';
 
 export interface DetectionOptions {
@@ -23,6 +23,7 @@ export interface ResourceLimits {
   readonly maxPixels: number;
   readonly maxDetectionSide: number;
   readonly maxDetectionCandidates: number;
+  readonly maxDetectionTiles: number;
   readonly maxRecognitionBatchSize: number;
   readonly maxRecognitionWidth: number;
   readonly maxTemporaryBytes: number;
@@ -35,7 +36,10 @@ export interface CreateEngineOptions {
   readonly interOpThreads?: number;
   readonly recognitionScoreThreshold?: number;
   readonly recognitionBatchSize?: number;
-  readonly reducedLimits?: ResourceLimits;
+  readonly reducedLimits?: Omit<ResourceLimits, 'maxDetectionTiles'> & {
+    /** Omission preserves the 0.1 reducedLimits source shape. */
+    readonly maxDetectionTiles?: number;
+  };
   readonly queueCapacity?: number;
   readonly maxPendingInputBytes?: number;
   readonly detection?: DetectionOptions;
@@ -64,6 +68,17 @@ export interface RecognitionBatchShape {
   readonly height: number;
   readonly width: number;
 }
+export interface DetectionPassShape {
+  readonly tileOrdinal: number;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly tensorWidth: number;
+  readonly tensorHeight: number;
+  readonly contourCandidates: number;
+  readonly rawCandidates: number;
+}
 export interface Diagnostics {
   readonly rejectedLines: readonly RejectedLine[];
   readonly warnings: readonly DiagnosticWarning[];
@@ -71,6 +86,10 @@ export interface Diagnostics {
   readonly acceptedBoxes: number;
   readonly detectionInputWidth: number;
   readonly detectionInputHeight: number;
+  readonly rawDetectionBoxes: number;
+  readonly suppressedDuplicateBoxes: number;
+  readonly maxLiveDetectionPassBuffers: number;
+  readonly detectionPasses: readonly DetectionPassShape[];
   readonly recognitionBatchShapes: readonly RecognitionBatchShape[];
 }
 export interface TimingUs {
@@ -79,6 +98,7 @@ export interface TimingUs {
   readonly detectionPreprocess: number;
   readonly detectionInference: number;
   readonly detectionPostprocess: number;
+  readonly detectionMerge: number;
   readonly cropAndSort: number;
   readonly recognitionPreprocess: number;
   readonly recognitionInference: number;
@@ -92,16 +112,26 @@ export interface OcrResult {
   readonly timingUs: TimingUs;
   readonly diagnostics?: Diagnostics;
 }
+export interface TiledDetectionInfo {
+  readonly contractVersion: 'tiled-v1';
+  readonly tileSide: 1280;
+  readonly minimumOverlap: 128;
+  readonly artificialBoundaryMargin: 32;
+  readonly mergeIouThreshold: 0.5;
+  readonly mergeIosThreshold: 0.8;
+}
 export interface EngineInfo {
   readonly coreVersion: string;
   readonly modelBundleId: string;
   readonly modelBundleSchemaVersion: string;
+  readonly normalizedConfigSchemaVersion: string;
   readonly backend: string;
   readonly executionProvider: string;
   readonly capabilities: {
     readonly detection: boolean;
     readonly recognition: boolean;
     readonly textlineOrientation: boolean;
+    readonly tiledDetection: boolean;
   };
   readonly concurrencyMode: 'serialized_reject_when_busy';
   readonly limits: ResourceLimits & { readonly maxConcurrentCalls: 1 };
@@ -109,6 +139,7 @@ export interface EngineInfo {
   readonly interOpThreads: number;
   readonly detectionStrategy: DetectionStrategy;
   readonly detectionMaxSide: number;
+  readonly tiledDetection?: TiledDetectionInfo;
   readonly defaultRecognitionScoreThreshold: number;
   readonly defaultRecognitionBatchSize: number;
   readonly adapter: {

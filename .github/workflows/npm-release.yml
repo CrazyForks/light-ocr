@@ -6,7 +6,7 @@ on:
       version:
         description: Lockstep version for all six packages
         required: true
-        default: 0.1.0
+        default: 0.2.0
         type: string
       promote_latest:
         description: Promote the verified release from next to latest
@@ -163,7 +163,7 @@ jobs:
         run: |
           python tools/npm_release.py assemble \
             --version "$RELEASE_VERSION" \
-            --bundle models/generated/ppocrv6-small-onnx-20260714.1 \
+            --bundle models/generated/ppocrv6-small-onnx-20260714.2 \
             --native-root dist/native-input \
             --output-dir dist/npm/staging
           python tools/npm_release.py pack \

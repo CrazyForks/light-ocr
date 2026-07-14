@@ -44,6 +44,17 @@ inline PixelFormat parse_format(const std::string& value) {
   throw std::runtime_error("format must be gray8, rgb8, bgr8, or rgba8");
 }
 
+inline EngineOptions engine_options_for_profile(const std::string& profile) {
+  EngineOptions options;
+  if (profile == "upstream_exact") {
+    options.detection.strategy = DetectionStrategy::upstream_exact;
+    options.recognition_batch_size = 8;
+  } else if (profile == "tiled_v1") {
+    options.detection.strategy = DetectionStrategy::tiled;
+  }
+  return options;
+}
+
 inline Arguments parse_arguments(int argc, char** argv, bool benchmark) {
   Arguments result;
   for (int index = 1; index < argc; ++index) {
@@ -80,9 +91,10 @@ inline Arguments parse_arguments(int argc, char** argv, bool benchmark) {
     result.profile = benchmark ? "runtime_default" : "upstream_exact";
   }
   if (result.profile != "upstream_exact" &&
-      result.profile != "bounded_default" && result.profile != "runtime_default") {
+      result.profile != "bounded_default" && result.profile != "runtime_default" &&
+      result.profile != "tiled_v1") {
     throw std::runtime_error(
-        "profile must be upstream_exact, bounded_default, or runtime_default");
+        "profile must be upstream_exact, bounded_default, runtime_default, or tiled_v1");
   }
   return result;
 }

@@ -295,7 +295,135 @@ int main() {
     }
     exact_engine.value()->close();
 
-    std::cout << "PASS real PP-OCRv6 golden result, limits, concurrency, and lifecycle\n";
+    auto tiled_bundle = light_ocr::ModelBundle::create(bundle_files);
+    light_ocr::EngineOptions tiled_options;
+    tiled_options.detection.strategy = light_ocr::DetectionStrategy::tiled;
+    auto tiled_engine = light_ocr::Engine::create(
+        std::move(tiled_bundle).value(), tiled_options);
+    if (!tiled_engine ||
+        tiled_engine.value()->info().detection_strategy !=
+            light_ocr::DetectionStrategy::tiled ||
+        tiled_engine.value()->info().detection_max_side != 1280 ||
+        tiled_engine.value()->info().normalized_config_schema_version != "1.2" ||
+        !tiled_engine.value()->info().capabilities.tiled_detection ||
+        !tiled_engine.value()->info().tiled_detection ||
+        tiled_engine.value()->info().tiled_detection->contract_version !=
+            "tiled-v1") {
+      std::cerr << "explicit tiled profile did not expose its runtime contract\n";
+      return 1;
+    }
+    cv::Mat tiled_blank(2048, 2048, CV_8UC3, cv::Scalar(255, 255, 255));
+    light_ocr::ImageView tiled_blank_view{
+        tiled_blank.data, tiled_blank.total() * tiled_blank.elemSize(), 2048,
+        2048, tiled_blank.step, light_ocr::PixelFormat::bgr8};
+    light_ocr::RecognizeOptions tiled_recognize_options;
+    tiled_recognize_options.include_diagnostics = true;
+    auto tiled_result = tiled_engine.value()->recognize(
+        tiled_blank_view, tiled_recognize_options);
+    if (!tiled_result || !tiled_result.value().lines.empty() ||
+        !tiled_result.value().diagnostics ||
+        tiled_result.value().diagnostics->detection_passes.size() != 4 ||
+        tiled_result.value().diagnostics->detection_input_width != 1280 ||
+        tiled_result.value().diagnostics->detection_input_height != 1280 ||
+        tiled_result.value().diagnostics->raw_detection_boxes != 0 ||
+        tiled_result.value().diagnostics->suppressed_duplicate_boxes != 0 ||
+        tiled_result.value().diagnostics->max_live_detection_pass_buffers != 1) {
+      std::cerr << "2048 tiled blank contract or diagnostics are invalid\n";
+      return 1;
+    }
+    if (tiled_result.value().diagnostics->detection_passes[1].x != 768 ||
+        tiled_result.value().diagnostics->detection_passes[2].y != 768) {
+      std::cerr << "2048 tiled plan is not the locked row-major plan\n";
+      return 1;
+    }
+    cv::Mat boundary_text(2048, 2048, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::putText(boundary_text, "HELLO 123", cv::Point(1050, 600),
+                cv::FONT_HERSHEY_SIMPLEX, 2.5, cv::Scalar(0, 0, 0), 5,
+                cv::LINE_AA);
+    light_ocr::ImageView boundary_text_view{
+        boundary_text.data, boundary_text.total() * boundary_text.elemSize(),
+        2048, 2048, boundary_text.step, light_ocr::PixelFormat::bgr8};
+    auto boundary_result = tiled_engine.value()->recognize(
+        boundary_text_view, tiled_recognize_options);
+    if (!boundary_result || boundary_result.value().lines.size() != 1 ||
+        boundary_result.value().lines.front().text != "HELLO 123" ||
+        !boundary_result.value().diagnostics ||
+        boundary_result.value().diagnostics->raw_detection_boxes < 2 ||
+        boundary_result.value().diagnostics->suppressed_duplicate_boxes < 1 ||
+        boundary_result.value().diagnostics->raw_detection_boxes -
+                boundary_result.value().diagnostics->suppressed_duplicate_boxes !=
+            boundary_result.value().diagnostics->accepted_boxes) {
+      std::cerr << "tiled boundary text was not recognized and deduplicated once\n";
+      return 1;
+    }
+    auto boundary_without_diagnostics =
+        tiled_engine.value()->recognize(boundary_text_view);
+    bool same_boundary_box = boundary_without_diagnostics &&
+                             !boundary_without_diagnostics.value().lines.empty();
+    if (same_boundary_box) {
+      for (std::size_t index = 0; index < 4; ++index) {
+        const auto& left = boundary_without_diagnostics.value()
+                               .lines.front()
+                               .box.points[index];
+        const auto& right =
+            boundary_result.value().lines.front().box.points[index];
+        same_boundary_box = same_boundary_box && left.x == right.x &&
+                            left.y == right.y;
+      }
+    }
+    if (!boundary_without_diagnostics ||
+        boundary_without_diagnostics.value().diagnostics ||
+        boundary_without_diagnostics.value().lines.size() != 1 ||
+        boundary_without_diagnostics.value().lines.front().text !=
+            boundary_result.value().lines.front().text ||
+        !same_boundary_box) {
+      std::cerr << "tiled diagnostics changed the OCR result\n";
+      return 1;
+    }
+    light_ocr::RecognizeOptions tiled_side_override;
+    tiled_side_override.detection_max_side = 960;
+    auto tiled_override = tiled_engine.value()->recognize(
+        image, tiled_side_override);
+    if (tiled_override ||
+        tiled_override.error().code != light_ocr::ErrorCode::invalid_argument) {
+      std::cerr << "tiled request side override was not rejected\n";
+      return 1;
+    }
+    tiled_engine.value()->close();
+
+    auto tile_limited_bundle = light_ocr::ModelBundle::create(bundle_files);
+    light_ocr::EngineOptions tile_limited_options = tiled_options;
+    tile_limited_options.reduced_limits = light_ocr::ResourceLimits{};
+    tile_limited_options.reduced_limits->max_detection_tiles = 3;
+    auto tile_limited_engine = light_ocr::Engine::create(
+        std::move(tile_limited_bundle).value(), tile_limited_options);
+    auto tile_limited_result = tile_limited_engine.value()->recognize(
+        tiled_blank_view);
+    if (tile_limited_result ||
+        tile_limited_result.error().code !=
+            light_ocr::ErrorCode::resource_limit_exceeded) {
+      std::cerr << "tiled tile ceiling was not enforced before inference\n";
+      return 1;
+    }
+    tile_limited_engine.value()->close();
+
+    auto candidate_limited_bundle = light_ocr::ModelBundle::create(bundle_files);
+    light_ocr::EngineOptions candidate_limited_options = tiled_options;
+    candidate_limited_options.reduced_limits = light_ocr::ResourceLimits{};
+    candidate_limited_options.reduced_limits->max_detection_candidates = 1;
+    auto candidate_limited_engine = light_ocr::Engine::create(
+        std::move(candidate_limited_bundle).value(), candidate_limited_options);
+    auto candidate_limited_result = candidate_limited_engine.value()->recognize(
+        boundary_text_view);
+    if (candidate_limited_result ||
+        candidate_limited_result.error().code !=
+            light_ocr::ErrorCode::resource_limit_exceeded) {
+      std::cerr << "tiled global candidate ceiling returned a partial result\n";
+      return 1;
+    }
+    candidate_limited_engine.value()->close();
+
+    std::cout << "PASS real PP-OCRv6 bounded, exact, tiled, concurrency, and lifecycle\n";
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << exception.what() << '\n';

@@ -118,7 +118,8 @@ Result<DetectionBoxes> db_postprocess(const float* probabilities, std::size_t el
                                       std::uint32_t original_height,
                                       const DetectionConfig& config,
                                       const ResourceLimits& limits,
-                                      bool include_trace) {
+                                      bool include_trace,
+                                      bool reject_candidate_overflow) {
   try {
     if (probabilities == nullptr || (shape.size() != 3 && shape.size() != 4) ||
         original_width == 0 || original_height == 0) {
@@ -158,12 +159,26 @@ Result<DetectionBoxes> db_postprocess(const float* probabilities, std::size_t el
     }
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(bitmap, contours, cv::RETR_LIST, cv::CHAIN_APPROX_SIMPLE);
-    const auto candidates = std::min<std::size_t>(
-        contours.size(), std::min<std::uint32_t>(config.max_candidates,
-                                                limits.max_detection_candidates));
+    if (contours.size() > std::numeric_limits<std::uint32_t>::max()) {
+      return Result<DetectionBoxes>::failure(Error{
+          ErrorCode::resource_limit_exceeded,
+          "Detection contour count exceeds its representable limit", {}});
+    }
+    const auto candidate_limit = std::min<std::uint32_t>(
+        config.max_candidates, limits.max_detection_candidates);
+    if (reject_candidate_overflow && contours.size() > candidate_limit) {
+      return Result<DetectionBoxes>::failure(Error{
+          ErrorCode::resource_limit_exceeded,
+          "Detection contour count exceeds the effective candidate limit", {}});
+    }
+    const auto candidates =
+        std::min<std::size_t>(contours.size(), candidate_limit);
     DetectionBoxes output;
     output.contour_candidates = static_cast<std::uint32_t>(candidates);
+    output.total_contours = static_cast<std::uint32_t>(contours.size());
     output.boxes.reserve(candidates);
+    output.scores.reserve(candidates);
+    output.candidate_indices.reserve(candidates);
     if (include_trace) {
       std::vector<std::uint8_t> packed_bitmap;
       const auto row_bytes = static_cast<std::size_t>(bitmap.cols);
@@ -238,6 +253,8 @@ Result<DetectionBoxes> db_postprocess(const float* probabilities, std::size_t el
         continue;
       }
       output.boxes.push_back(restored);
+      output.scores.push_back(score);
+      output.candidate_indices.push_back(static_cast<std::uint32_t>(index));
       finish_trace("accepted");
     }
     return Result<DetectionBoxes>::success(std::move(output));

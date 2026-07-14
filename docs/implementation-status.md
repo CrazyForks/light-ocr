@@ -1,7 +1,7 @@
 # C++ Core 与 Node-API 实施状态
 
 更新时间：2026-07-14  
-结论：C++ Core 第一阶段高分辨率优化与 Node-API v1 已完成，`@arcships/light-ocr@0.1.0` 已公开发布。默认 bounded/960、batch 1 流式 recognition、schema 1.1 bundle、双 profile parity、四平台 Core CI、Node.js 22/24 八组 package matrix、registry 安装和禁网运行门槛均已通过。`tiled` 属于后续准确模式，不阻塞 `0.1.0`；其[技术设计与验收规格](tiled-design-and-acceptance.md)已形成 Draft，但实现、语料和四平台基线仍为 Pending。
+结论：已发布的 `@arcships/light-ocr@0.1.0` 及其 bounded/960 行为不变。当前源码正在实现下一次 minor release 的 `tiled-v1`：schema 1.2 bundle、C++ pipeline、确定性 merge、诊断、Node runtime/类型和 0.2.0 package staging 已完成本机实现与测试；八张独立 ground truth、Python tiled oracle、四平台受审 peak/latency baseline 和 registry release evidence 仍未完成，因此 README 与 npm `latest` 不能宣称 tiled 已支持。
 
 状态含义：
 
@@ -17,7 +17,7 @@
 | 生产 Core 无 Python、无子进程 | Done | `light_ocr_core` 仅 C++；Python 只在 oracle/generator/report tools；Core 无 process/shell API。 |
 | raw-pixel 公共 API、ownership/lifecycle 文档 | Done | `include/light_ocr/*.hpp` 与 [native-api.md](native-api.md)。 |
 | detection/geometry/crop/recognition/decode 分层与测试 | Done | 独立源码模块、unit tests、stage probe 和真实模型 integration tests。 |
-| PP-OCRv6 bundle 固定、哈希、许可、离线可用 | Done | `ppocrv6-small-onnx-20260714.1`、schema 1.1、原始归档、成员、dictionary、manifest 和 USTAR 已锁定；npm model tarball 为 26,091,093 bytes，registry integrity 已记录。 |
+| PP-OCRv6 bundle 固定、哈希、许可、离线可用 | Done（0.1.0）/ candidate（0.2.0） | 已发布 `.1`/schema 1.1 证据保持不变；当前 `.2` candidate 使用相同 ONNX bytes，新增 schema 1.2、`tiled-v1` contract、新 manifest/config/archive hash，并把 minimum Core 提升到 0.2.0。 |
 | stage 与 final parity | Done | `upstream_exact` 与 `bounded_default` 均为 14/14；候选级 trace 完整；release commit 的 oracle 与四平台 jobs 全绿。 |
 | 首 bundle ground-truth quality report | Done（本机） | bounded 默认在 10 个锁定 fixtures 上 10/10 exact、CER `0`；IoU≥0.5 下 detection precision/recall/Hmean 均为 `1.0`。旧 exact 基线仍独立保留。 |
 | 相对性能门槛 | Done（参考本机） | bounded 默认：median `0.9824867× ≤ 1.10×`；p95 `1.0139793× ≤ 1.15×`；inference median `0.9961966× ≤ 1.05×`。受控 CI worker 报告仍应保留。 |
@@ -26,7 +26,7 @@
 | manifest、hash、licenses、SBOM、parity、benchmark | Done | Release commit 已重新生成并保存四平台 metadata、六个 npm tarballs 的 hashes/integrity、parity、quality 与 benchmark 证据。 |
 | N-API/npm 非本 Core milestone | Done / `0.1.0` published | raw Node-API v8、CJS/ESM、`.d.ts`、内置模型解析、四平台 prebuild、双重背压、AbortSignal 与生命周期均已完成；[npm release run 29312486301](https://github.com/arcships/light-ocr/actions/runs/29312486301) 的 Node 22/24 八组测试、registry 分阶段发布和禁网复验全绿。 |
 | 高分辨率峰值内存 | Done | Release 原生独立进程本机参考：2048² 空白 `318.8 MiB ≤ 384 MiB`；xfund 密集表单 116 框 `400.5 MiB ≤ 640 MiB`。四平台 release jobs 的真实模型与 RSS gates 均通过。 |
-| Tiled 高分辨率准确模式 | Pending / design drafted | 独立规格已固定 `tiled-v1` planner、merge、C++/Node additive API、八张 2048² ground-truth fixtures、四平台 peak/latency 和六包发布门槛；代码、corpus、baseline 尚未实现，不得声明已支持。 |
+| Tiled 高分辨率准确模式 | In progress / Core + Node implemented locally | 1280 tile、2048→4-pass row-major、全局 candidate ceiling、IoU/IOS greedy merge、原图 recognition、C++/Node contract、CLI memory/latency 与真实 package smoke 已实现；八张 corpus、独立 oracle、四平台 accepted baseline 和 0.2.0 发布仍是硬缺口。 |
 
 ## 本机最终验证快照
 
@@ -34,7 +34,7 @@
 
 | 验证 | 结果 |
 | --- | --- |
-| Release CTest | 16/16 passed；包括 unit、integration、双 profile golden/parity、quality 和两项原生 memory gate |
+| Release CTest | 18/18 passed；包括 unit、integration、双 profile golden/parity、quality，以及 bounded 与 tiled 原生 memory gate |
 | 全阶段语料 | `upstream_exact` 14/14；`bounded_default` 14/14 |
 | 质量基线 | bounded 10/10 exact；0/104 CER；10 TP / 0 FP / 0 FN，detection P/R/Hmean = 1.0（IoU≥0.5） |
 | ASan + UBSan | 2/2 passed；Apple 平台不启用 LSan |
@@ -42,8 +42,10 @@
 | standalone fuzz | image 100k、bundle 100k、geometry 100k、lifecycle 10，全部完成 |
 | leak/RSS | 5 warmup + 10 cycles；当前复测 growth 21,413,888 bytes（2,141,388 bytes/cycle）；gate 32 MiB / 8 MiB per cycle |
 | offline contract | sterile cwd/minimal locale environment passed |
-| model archive | 31,334,400 bytes；SHA-256 `74e246bf075c141da51e58515c731298fdabee9fd5bd8feb7cf6c7f4f352de17` |
+| model archive | 已发布 `.1`：31,334,400 bytes / `74e246bf…de17`；tiled candidate `.2`：31,334,400 bytes / `e543b93b…712f` |
 | Node-API v1 | Node.js 22.13.0；macOS arm64 Release/Werror 构建；CTest 3/3；bounded/exact 映射、真实 PP-OCRv6 API、snapshot/byteOffset、校验、symlink root、双重背压、abort、heartbeat、close/worker teardown 测试通过 |
+| Tiled candidate | Core unit/integration、Node adapter 与 2048 blank/dense memory gate 通过；2048 boundary `HELLO 123` 由 4 个 raw boxes 确定性合并为 1 行；side override、tile ceiling、global candidate ceiling 均返回稳定错误 |
+| Tiled candidate RSS（本机探索值） | macOS arm64：2048² blank 676,397,056 bytes；dense 740,982,784 bytes；均低于 1 GiB release gate，尚不是四平台 accepted baseline |
 
 性能报告（5 warmup + 30 iterations，`generated-hello-123`）：
 
@@ -59,4 +61,4 @@
 
 `0.1.0` 的四平台 Core、Node.js 22/24 prebuild、六包确定性制品、public registry、provenance、默认 `createEngine()` 与禁网运行证据已经完成，详见 [npm 0.1.0 发布记录](releases/npm-0.1.0.md)。
 
-后续工作包括 C++ 安装包与稳定 ABI、`tiled` 准确模式、更多模型、Electron/Bun、签名/公证和非 npm 分发；这些都不是 `0.1.0` 已声明能力，也不影响本次 npm 发布结论。
+当前下一优先级是完成 tiled 八张 locked fixtures、独立 Python stage oracle、四平台 Core/Node 报告与 baseline review，再运行六包 local-registry/offline/release evidence 链。完成定义全绿前不发布 0.2.0，也不改变 0.1.0 的公开结论。

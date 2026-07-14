@@ -14,6 +14,17 @@ from tools import npm_release
 
 
 class NpmReleaseTests(unittest.TestCase):
+    def test_rejects_a_pre_tiled_package_version(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "0.2.0 or newer"):
+            npm_release.assemble(
+                argparse.Namespace(
+                    version="0.1.1",
+                    bundle=Path("unused"),
+                    native_root=Path("unused"),
+                    output_dir=Path("unused"),
+                )
+            )
+
     @mock.patch("tools.npm_release.subprocess.run")
     def test_registry_lookup_bypasses_stale_npm_metadata(self, run: mock.Mock) -> None:
         run.return_value = subprocess.CompletedProcess(
@@ -63,29 +74,48 @@ class NpmReleaseTests(unittest.TestCase):
             bundle = root / "bundle"
             bundle.mkdir()
             (bundle / "manifest.json").write_text(
-                json.dumps({"bundleId": npm_release.BUNDLE_ID}) + "\n", "utf-8"
+                json.dumps({
+                    "schemaVersion": "1.0",
+                    "bundleId": npm_release.BUNDLE_ID,
+                    "normalizedConfigPath": "normalized-config.json",
+                }) + "\n", "utf-8"
             )
-            (bundle / "normalized-config.json").write_text("{}\n", "utf-8")
+            (bundle / "normalized-config.json").write_text(
+                json.dumps({
+                    "schemaVersion": "1.2",
+                    "runtimeProfiles": {
+                        "tiled": {"contractVersion": "tiled-v1"}
+                    },
+                }) + "\n", "utf-8"
+            )
 
             staging = root / "staging"
             npm_release.assemble(
                 argparse.Namespace(
-                    version="0.1.0",
+                    version="0.2.0",
                     bundle=bundle,
                     native_root=native_root,
                     output_dir=staging,
                 )
             )
             facade = json.loads((staging / "facade" / "package.json").read_text("utf-8"))
-            self.assertEqual(facade["dependencies"][npm_release.MODEL_PACKAGE], "0.1.0")
+            self.assertEqual(facade["dependencies"][npm_release.MODEL_PACKAGE], "0.2.0")
             self.assertEqual(len(facade["optionalDependencies"]), 4)
+            model = json.loads(
+                (staging / "model-ppocrv6-small" / "package.json").read_text("utf-8")
+            )
+            self.assertEqual(model["lightOcr"]["manifestSchemaVersion"], "1.0")
+            self.assertEqual(
+                model["lightOcr"]["normalizedConfigSchemaVersion"], "1.2"
+            )
+            self.assertEqual(model["lightOcr"]["tiledContractVersion"], "tiled-v1")
 
             tarballs = root / "tarballs"
             npm_release.pack(
                 argparse.Namespace(staging_dir=staging, output_dir=tarballs, npm=npm)
             )
             release = json.loads((tarballs / "release-manifest.json").read_text("utf-8"))
-            self.assertEqual(release["version"], "0.1.0")
+            self.assertEqual(release["version"], "0.2.0")
             self.assertEqual(len(release["packages"]), 6)
             self.assertEqual(len(list(tarballs.glob("*.tgz"))), 6)
 

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -27,6 +28,16 @@ struct DetectionConfig {
   bool use_dilation = false;
   std::string score_mode;
   std::uint32_t minimum_box_side = 0;
+};
+
+struct TiledDetectionConfig {
+  std::string contract_version;
+  std::uint32_t tile_side = 0;
+  std::uint32_t minimum_overlap = 0;
+  std::uint32_t dimension_multiple = 0;
+  std::uint32_t artificial_boundary_margin = 0;
+  double merge_iou_threshold = 0;
+  double merge_ios_threshold = 0;
 };
 
 struct GeometryConfig {
@@ -55,10 +66,12 @@ struct RecognitionConfig {
 struct BundleData {
   std::string id;
   std::string schema_version;
+  std::string normalized_config_schema_version;
   std::string detection_model_path;
   std::string recognition_model_path;
   std::unordered_map<std::string, SharedBytes> files;
   DetectionConfig detection;
+  std::optional<TiledDetectionConfig> tiled_detection;
   DetectionStrategy default_detection_strategy = DetectionStrategy::upstream_exact;
   std::uint32_t default_detection_max_side = 4'000;
   GeometryConfig geometry;
