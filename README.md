@@ -1,8 +1,10 @@
 # light-ocr
 
+![light-ocr 像素风宣传 Banner](docs/assets/light-ocr-banner.png)
+
 一个可嵌入的 C++17 PP-OCRv6 small OCR Core。输入是调用方持有的 raw pixels，输出是按阅读顺序排列的 UTF-8 text、confidence 和 quadrilateral boxes。源码树同时包含基于 Node-API v8 的异步 Node.js 适配器；公开包名已确定为 `@arcships/light-ocr`，当前尚未发布平台预编译 npm 包。
 
-当前结论：C++ Core 功能、首 bundle 质量基线和 macOS arm64 本地验证已完成；Node.js 22/macOS arm64 的源码构建、真实模型识别、背压、AbortSignal 和生命周期测试已通过。npm 设计采用一个 facade、一个必需的 PP-OCRv6 model package 和四个平台 native packages，使用户安装后可直接 `createEngine()`。四平台 Node 22/24 预编译矩阵、打包脚本、许可证选择和 registry 发布仍待完成。详见 [实施状态](docs/implementation-status.md)。
+当前结论：C++ Core 功能、首 bundle 质量基线和 macOS arm64 本地验证已完成；Node.js 22/macOS arm64 的源码构建、真实模型识别、背压、AbortSignal 和生命周期测试已通过。npm 设计采用一个 facade、一个必需的 PP-OCRv6 model package 和四个平台 native packages，使用户安装后可直接 `createEngine()`。四平台 Node 22/24 预编译矩阵、打包脚本和 registry 发布仍待完成。详见 [实施状态](docs/implementation-status.md)。
 
 ## 快速构建
 
