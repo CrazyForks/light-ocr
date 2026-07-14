@@ -1,18 +1,83 @@
 # light-ocr
 
-![light-ocr 像素风宣传 Banner](docs/assets/light-ocr-banner.png)
+[![Core CI](https://github.com/arcships/light-ocr/actions/workflows/core.yml/badge.svg?branch=main)](https://github.com/arcships/light-ocr/actions/workflows/core.yml)
+[![License](https://img.shields.io/github/license/arcships/light-ocr)](LICENSE)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)](https://isocpp.org/)
+[![Node--API v8](https://img.shields.io/badge/Node--API-v8-339933.svg)](bindings/node/README.md)
+[![npm: coming soon](https://img.shields.io/badge/npm-%40arcships%2Flight--ocr%20coming%20soon-CB3837.svg)](docs/npm-packaging.md)
 
-一个可嵌入的 C++17 PP-OCRv6 small OCR Core。输入是调用方持有的 raw pixels，输出是按阅读顺序排列的 UTF-8 text、confidence 和 quadrilateral boxes。源码树同时包含基于 Node-API v8 的异步 Node.js 适配器；公开包名已确定为 `@arcships/light-ocr`，当前尚未发布平台预编译 npm 包。
+English | [简体中文](README.zh-CN.md)
 
-当前结论：C++ Core 功能、首 bundle 质量基线和 macOS arm64 本地验证已完成；Node.js 22/macOS arm64 的源码构建、真实模型识别、背压、AbortSignal 和生命周期测试已通过。npm 设计采用一个 facade、一个必需的 PP-OCRv6 model package 和四个平台 native packages，使用户安装后可直接 `createEngine()`。四平台 Node 22/24 预编译矩阵、打包脚本和 registry 发布仍待完成。详见 [实施状态](docs/implementation-status.md)。
+![light-ocr pixel-art banner](docs/assets/light-ocr-banner.png)
 
-## 快速构建
+**Offline OCR for native and Node.js applications, powered by PP-OCRv6 Small.**
+
+`light-ocr` turns decoded image pixels into ordered text lines, confidence scores, and quadrilateral boxes—inside your own process, without sending an image to a cloud service or running a Python sidecar.
+
+It is made for products where OCR should feel like a local capability: quick to invoke, private by default, and straightforward to embed into an existing image pipeline.
+
+> **Pre-release:** the C++ core and Node-API adapter source are available today. Prebuilt `@arcships` npm packages are being prepared and are not published yet. See [Package support](#package-support).
+
+## Where light-ocr fits
+
+| Use case | What light-ocr provides |
+| --- | --- |
+| **Desktop and local-first apps** | Extract text from screenshots, selections, clipboard images, notes, and imported pages without uploading user content. |
+| **Private document workflows** | Read text from scanned forms, receipts, labels, and internal documents after your application renders or decodes them. |
+| **Image, camera, and media tools** | Add searchable text, copy-text actions, overlays, indexing, or accessibility features to an existing pixel pipeline. |
+| **On-premise and edge software** | Run a consistent OCR model in kiosks, terminals, appliances, or controlled networks where a cloud dependency is undesirable. |
+| **Native and Node.js services** | Embed OCR directly instead of deploying and supervising a separate Python process or OCR daemon. |
+
+The current model is best suited to general text detection and recognition in CJK/Latin mixed content. PDF rendering, encoded-image decoding, document layout analysis, tables, formulas, and translation remain the host application's responsibility.
+
+## Why this project exists
+
+Cloud OCR is convenient, but it introduces uploads, network availability, recurring cost, and a new privacy boundary. Operating-system OCR APIs avoid the network, but their behavior and availability vary by platform. PaddleOCR offers excellent models, while its usual Python deployment is not always a natural fit for desktop software, native products, or a Node.js application.
+
+`light-ocr` closes that gap with one reusable native core built around official PP-OCRv6 Small models. Applications keep control of image decoding, scheduling, storage, and user experience; the library focuses on turning pixels into structured OCR results.
+
+## Why use light-ocr
+
+- **Local by default.** Recognition performs no runtime network access and does not start a child process.
+- **Ready for real application pipelines.** It accepts `GRAY8`, `RGB8`, `BGR8`, and `RGBA8` pixel buffers and returns text, confidence, and four-point geometry.
+- **Memory-conscious on large images.** Detection is bounded by default and recognition is streamed one batch at a time, avoiding memory growth proportional to every detected line.
+- **A pinned, reproducible model.** The approximately 31 MB PP-OCRv6 Small bundle is integrity-checked and designed to ship with the application instead of downloading on first use.
+- **Consistent across supported platforms.** The same model and result contract are used on macOS, Linux, and Windows.
+- **Built for asynchronous hosts.** The Node-API adapter keeps inference away from the JavaScript thread, with bounded queues, cancellation, and explicit lifecycle control.
+- **Open and inspectable.** The project is Apache-2.0 licensed and tests real model behavior, high-resolution memory use, lifecycle safety, and output parity in CI.
+
+## What results look like
+
+For each detected line, light-ocr returns the recognized text, a confidence score, and its position in the original image:
+
+```json
+{
+  "lines": [
+    {
+      "text": "HELLO 123",
+      "confidence": 0.99,
+      "box": [
+        {"x": 106, "y": 54},
+        {"x": 554, "y": 54},
+        {"x": 554, "y": 135},
+        {"x": 106, "y": 135}
+      ]
+    }
+  ]
+}
+```
+
+Coordinates are quadrilaterals rather than axis-aligned rectangles, so rotated and perspective text can be represented without discarding geometry.
+
+## Try it from source
+
+### C++ core
+
+Requirements: Python 3 for bootstrap tooling, CMake, and a C++17 compiler. Dependencies and model inputs are pinned; the built runtime does not depend on Python.
 
 ```bash
 python3 tools/bootstrap_dependencies.py --cache-dir .cache/dependencies
-python3 tools/bootstrap_dependencies.py --cache-dir .cache/dependencies --offline
 python3 tools/bootstrap_models.py --cache-dir .cache/models
-python3 tools/package_model_bundle.py
 
 cmake --preset release \
   -DLIGHT_OCR_DEPENDENCY_CACHE_DIR="$PWD/.cache/dependencies"
@@ -20,37 +85,76 @@ cmake --build --preset release --parallel
 ctest --preset release
 ```
 
-这组命令只需要 C++ 测试。完整 stage parity、质量和性能测试还需按 [构建与发布文档](docs/build-and-release.md) 安装 hash-locked Python oracle。
+See [Build and release](docs/build-and-release.md) for platform prerequisites and [C++ API](docs/native-api.md) for integration.
 
-Node.js 适配器的本地构建、调用和测试见 [bindings/node/README.md](bindings/node/README.md)。
+### Node.js adapter
 
-## 核心属性
+The asynchronous Node-API adapter can be built from source; its current local release evidence is Node.js 22 on macOS arm64. Follow the [Node.js source guide](bindings/node/README.md).
 
-- 官方 PP-OCRv6 small detection/recognition ONNX bytes，逐文件和最终 bundle archive 双重锁定。
-- ONNX Runtime 1.22.0 CPU、OpenCV 4.10.0、Clipper 6.4.2，全部 exact archive hash。
-- GRAY8、RGB8、BGR8、RGBA8；同步 API；每个 engine 同时只接收一个请求。
-- checked arithmetic、图像/候选/batch/宽度/临时内存上限。
-- 真实模型 integration、14-fixture stage parity、ASan/UBSan、TSan、fuzz、leak 和 performance gates。
-- 10-fixture pixel-bound ground truth：文字 CER 与 detection precision/recall/Hmean 均可重复生成报告。
-- Core 运行时不联网、不启动进程、不读取隐式模型路径，也不依赖 Python。
+The intended package experience after the first npm release is:
 
-## 文档
+```ts
+import { createEngine } from "@arcships/light-ocr";
 
-- [需求](docs/requirements.md)
-- [实施与验收状态](docs/implementation-status.md)
-- [架构](docs/architecture.md)
-- [高分辨率内存优化](docs/memory-optimization.md)
+const engine = await createEngine(); // bundled PP-OCRv6 Small model
+const result = await engine.recognize({
+  data: pixels,
+  width,
+  height,
+  stride,
+  pixelFormat: "rgba8",
+});
+
+console.log(result.lines);
+await engine.close();
+```
+
+No separate model download or postinstall compilation is planned for the published package.
+
+## Package support
+
+| Distribution | Status | Platforms |
+| --- | --- | --- |
+| C++ core source | Available | macOS arm64/x64, Linux x64 glibc, Windows x64 |
+| Node-API adapter source | Available, pre-release | Currently verified with Node.js 22 on macOS arm64 |
+| `@arcships/light-ocr` | In progress, not yet on npm | Planned for Node.js 22 and 24 on all Tier 1 platforms |
+| `@arcships/light-ocr-model-ppocrv6-small` | In progress, not yet on npm | Platform-independent model package bundled as a required dependency |
+| Platform native npm packages | In progress, not yet on npm | macOS arm64/x64, Linux x64 glibc, Windows x64 |
+
+The npm distribution will install one facade, one required model package, and the native package matching the host platform. Package contents, versioning, and release gates are documented in [npm packaging](docs/npm-packaging.md).
+
+## Project status
+
+`light-ocr` is under active development toward its first public package release. The native core, PP-OCRv6 bundle, high-resolution memory strategy, real-model corpus, and Node-API source adapter are implemented. The remaining release work is prebuilt Node.js binaries, package assembly, and npm publication.
+
+Until the first stable release, public APIs and package layout may still evolve; the project does not currently promise a stable cross-release C++ ABI.
+
+The Core CI builds and tests the project on:
+
+- macOS arm64
+- macOS x64
+- Linux x64 with glibc
+- Windows x64
+
+It also runs sanitizers, fuzz smoke tests, offline-runtime checks, output parity, quality, performance, and memory gates. See the [current implementation status](docs/implementation-status.md) for verified results and known gaps.
+
+## Documentation
+
 - [C++ API](docs/native-api.md)
-- [Node-API 使用与构建](bindings/node/README.md)
-- [Node-API 设计](docs/napi-design.md)
-- [npm package 设计](docs/npm-packaging.md)
-- [模型 bundle](docs/model-bundle.md)
-- [对齐与质量](docs/parity-testing.md)
-- [构建与发布](docs/build-and-release.md)
-- [决策记录](docs/decisions.md)
+- [Node.js adapter](bindings/node/README.md)
+- [Build and release](docs/build-and-release.md)
+- [Model bundle](docs/model-bundle.md)
+- [Accuracy and parity](docs/parity-testing.md)
+- [High-resolution memory behavior](docs/memory-optimization.md)
+- [Architecture](docs/architecture.md)
+- [Implementation status](docs/implementation-status.md)
 
-公共 API 只有 [core.hpp](include/light_ocr/core.hpp)、[types.hpp](include/light_ocr/types.hpp) 和 [error.hpp](include/light_ocr/error.hpp)。当前不承诺稳定 ABI 或外部 SDK 安装布局。
+## Community
+
+Issues and pull requests are welcome. If you are considering light-ocr for a product, feel free to [open an issue](https://github.com/arcships/light-ocr/issues) describing the platform, image source, language mix, and expected workload. Real application scenarios help shape package priorities and future model support.
+
+When reporting a bug, please include the platform, input dimensions and pixel format, the model bundle ID, and a minimal reproduction when possible. Do not attach private source images unless you are comfortable publishing them.
 
 ## License
 
-本项目采用 [Apache License 2.0](LICENSE)。第三方依赖和模型的许可证、notice 随对应发布制品提供。
+light-ocr is available under the [Apache License 2.0](LICENSE). Third-party dependencies and model notices are included with their corresponding release artifacts.
