@@ -5,18 +5,24 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import stat
 import tarfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "models" / "deps.lock.json"
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+DOWNLOAD_TIMEOUT_SECONDS = 60
 
 
 def safe_member_name(raw: str) -> str:
@@ -65,6 +71,72 @@ def verify(path: Path, record: dict[str, object]) -> None:
     inspect_archive(path)
 
 
+def download(record: dict[str, object], destination: Path) -> None:
+    expected_bytes = int(record["bytes"])
+    partial = destination.with_suffix(destination.suffix + ".part")
+    last_error: BaseException | None = None
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        offset = partial.stat().st_size if partial.exists() else 0
+        if offset > expected_bytes:
+            partial.unlink()
+            offset = 0
+        if offset == expected_bytes:
+            verify(partial, record)
+            os.replace(partial, destination)
+            return
+        headers = {"User-Agent": "light-ocr-bootstrap/1"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        request = urllib.request.Request(str(record["source"]), headers=headers)
+        try:
+            with urllib.request.urlopen(
+                request, timeout=DOWNLOAD_TIMEOUT_SECONDS
+            ) as response:
+                status = response.getcode()
+                content_range = response.headers.get("Content-Range", "")
+                append = bool(
+                    offset
+                    and status == 206
+                    and content_range.startswith(f"bytes {offset}-")
+                )
+                if offset and status == 206 and not append:
+                    partial.unlink(missing_ok=True)
+                    raise urllib.error.URLError(
+                        f"invalid resume response: {content_range!r}"
+                    )
+                mode = "ab" if append else "wb"
+                with partial.open(mode) as stream:
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        stream.write(chunk)
+                        if stream.tell() > expected_bytes:
+                            raise RuntimeError(
+                                f"{destination.name}: download exceeds locked byte count"
+                            )
+            if partial.stat().st_size == expected_bytes:
+                verify(partial, record)
+                os.replace(partial, destination)
+                return
+            last_error = RuntimeError(
+                f"incomplete response ({partial.stat().st_size}/{expected_bytes} bytes)"
+            )
+        except (
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+            urllib.error.URLError,
+        ) as exception:
+            last_error = exception
+        if attempt + 1 < DOWNLOAD_ATTEMPTS:
+            time.sleep(min(2 ** attempt, 8))
+    raise RuntimeError(
+        f"{destination.name}: dependency download failed after "
+        f"{DOWNLOAD_ATTEMPTS} attempts: {last_error}"
+    ) from last_error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache-dir", type=Path, default=ROOT / ".cache" / "dependencies")
@@ -79,15 +151,7 @@ def main() -> int:
             continue
         if arguments.offline:
             raise RuntimeError(f"offline dependency archive is missing: {destination}")
-        request = urllib.request.Request(
-            record["source"], headers={"User-Agent": "light-ocr-bootstrap/1"}
-        )
-        with urllib.request.urlopen(request, timeout=300) as response:
-            data = response.read()
-        temporary = destination.with_suffix(destination.suffix + ".tmp")
-        temporary.write_bytes(data)
-        verify(temporary, record)
-        os.replace(temporary, destination)
+        download(record, destination)
     print(arguments.cache_dir.resolve())
     return 0
 
