@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_ID = "ppocrv6-small-onnx-20260714.1"
 MODEL_PACKAGE = "@arcships/light-ocr-model-ppocrv6-small"
 FACADE_PACKAGE = "@arcships/light-ocr"
+NPM_REGISTRY = "https://registry.npmjs.org/"
+REGISTRY_WAIT_SECONDS = 600
 PLATFORMS: dict[str, dict[str, Any]] = {
     "macos-arm64": {
         "package": "@arcships/light-ocr-darwin-arm64",
@@ -484,7 +486,15 @@ def pack(arguments: argparse.Namespace) -> None:
 
 def npm_integrity(npm: str, specification: str) -> str | None:
     completed = subprocess.run(
-        [npm, "view", specification, "dist.integrity", "--json"],
+        [
+            npm,
+            "view",
+            specification,
+            "dist.integrity",
+            "--json",
+            "--prefer-online",
+            f"--registry={NPM_REGISTRY}",
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -501,14 +511,17 @@ def npm_integrity(npm: str, specification: str) -> str | None:
 
 
 def wait_for_integrity(npm: str, specification: str, expected: str) -> None:
-    for _ in range(60):
+    attempts = REGISTRY_WAIT_SECONDS // 3
+    for _ in range(attempts):
         actual = npm_integrity(npm, specification)
         if actual == expected:
             return
         if actual is not None and actual != expected:
             raise RuntimeError(f"registry integrity mismatch for {specification}")
         time.sleep(3)
-    raise RuntimeError(f"registry did not expose {specification} within 180 seconds")
+    raise RuntimeError(
+        f"registry did not expose {specification} within {REGISTRY_WAIT_SECONDS} seconds"
+    )
 
 
 def publish(arguments: argparse.Namespace) -> None:

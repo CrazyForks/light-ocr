@@ -8,11 +8,25 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from tools import npm_release
 
 
 class NpmReleaseTests(unittest.TestCase):
+    @mock.patch("tools.npm_release.subprocess.run")
+    def test_registry_lookup_bypasses_stale_npm_metadata(self, run: mock.Mock) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='"sha512-release-integrity"\n', stderr=""
+        )
+
+        integrity = npm_release.npm_integrity("npm", "@arcships/light-ocr@0.1.0")
+
+        self.assertEqual(integrity, "sha512-release-integrity")
+        command = run.call_args.args[0]
+        self.assertIn("--prefer-online", command)
+        self.assertIn(f"--registry={npm_release.NPM_REGISTRY}", command)
+
     def test_stages_and_deterministically_packs_six_packages(self) -> None:
         npm = shutil.which("npm")
         if npm is None:
