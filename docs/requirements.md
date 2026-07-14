@@ -434,6 +434,8 @@ Every fixture MUST have an immutable ID and documented redistribution or generat
 
 Benchmarks compare the core with the pinned Python ONNX Runtime oracle using the same machine, model bytes, thread settings, raw pixels, warmup count, and test order.
 
+Benchmarks are explicit, on-demand qualification work. Push, pull-request, scheduled, and npm release-preflight workflows MUST NOT run them automatically; trigger them only for an initial baseline, a performance-relevant implementation/dependency/runner change, a new public performance claim, or investigation of a suspected regression.
+
 Reports MUST include load time, engine initialization, every stage duration, total latency, peak resident memory, model size, and repeated-run memory behavior.
 
 Initial gates are:

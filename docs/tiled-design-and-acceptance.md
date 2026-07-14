@@ -641,7 +641,7 @@ hard memory/latency cases 至少包含 `tiled-small-text-2048`、`tiled-dense-20
 
 每个平台、fixture、Core/Node 组合固定 1/1 ORT threads：先 warmup 5 次，再测量 10 次完整 recognize；报告 median 与 nearest-rank p95。机器被标记为 noisy、CPU 信息变化或 thermal/power 条件不可确认时，结果只能作为 artifact，不能更新 committed baseline。
 
-release workflow 先在 build job 生成并验签 benchmark 工具归档，再交给同 OS/arch 的全新 runner 解包。Core 与 Python oracle 只在这个隔离 job 中采样；编译和 Node 测试留下的瞬时负载、热状态与缓存状态不得进入可接受 baseline。Core 与 Python 仍在同一 runner、相同线程配置和同一 fixture 上按固定次序比较，因此隔离不改变 comparator identity。
+benchmark 不属于普通 CI 或 npm release preflight。只有首次建立基线、Core/model/ORT/compiler/thread policy/runner class 变化、准备公开新性能数字或调查疑似回归时，才通过显式 `run_benchmark=true` 手动执行。Core 与 Python 必须在同一 runner、相同线程配置和同一 fixture 上按固定次序比较；结果只有在 runner identity 与热/负载条件可审查时才能成为 accepted baseline。
 
 首个 baseline 的 bootstrap 同时满足：
 
@@ -670,7 +670,7 @@ runnerClass / core-or-node / nodeVersion / threadConfig
 
 ### 12.1 PR 与 release jobs
 
-CI 形成以下依赖链：
+普通 CI 与 npm release preflight 形成以下依赖链：
 
 ```text
 contract/schema validation
@@ -679,16 +679,17 @@ planner + geometry + merge unit/fuzz regressions
         ↓
 tiled oracle parity + eight-fixture quality gates
         ↓
-four-platform Core memory/latency reports
-        ↓
-four-platform Node 22/24 contract + memory/latency reports
+four-platform Node 22/24 contract/real-OCR smoke
         ↓
 six-package staging + local-registry + offline verification
         ↓
 npm publish to next → evidence verification → promote latest
+
+按需 qualification（独立触发）：
+Core/Node reports → 四平台矩阵校验 → 人工 review/accepted baseline
 ```
 
-普通 PR 不读取 `NPM_TOKEN`，只构建 staging tarballs 和本地 registry。四平台较重的 characterization jobs 可以按 path filter 避免纯文案 PR 重跑，但任何触及 Core、Node、bundle/config、model lock、corpus、benchmark 或 workflow 的 PR 必须执行完整链；release workflow 无条件执行。
+普通 PR 不读取 `NPM_TOKEN`；release preflight 也不采集 benchmark。性能 qualification 必须由人明确触发，不能因为 push、PR、定时器或普通发布自动运行。触发条件仅限首次基线、性能相关依赖/实现/runner 变化、新性能公开值或疑似回归调查。
 
 quality、memory 与 latency tool 返回非零 exit code 才算 gate，不能只上传一份带 `"passed": false` 的 JSON。四平台 artifacts 由汇总 job 校验 schema、identity、hash、完整矩阵和 threshold 后，才允许进入 package job。
 
@@ -722,7 +723,7 @@ npm version 不可覆写。发现 tiled 严重问题时：
 
 ## 13. 实施顺序
 
-当前实现快照（2026-07-14）：步骤 1–7 已进入源码。八张 2048² fixture 共 196 行在本机 Release Core 上达到 196 TP / 0 FP / 0 FN、CER 0、duplicate line 0，独立 Python planner/merge/stage oracle 与原生候选来源、抑制关系和最终结果对齐；四平台 Core/Node 22/24 采集、完整矩阵校验、首次 baseline candidate 和无 token 本地 registry 预检也已接入 release workflow。步骤 8 仍需一次真实四平台 run、人工 review 与 accepted baseline commit；步骤 9 的公开发布仍是阻断项。
+当前实现快照（2026-07-14）：步骤 1–7 已进入源码。八张 2048² fixture 共 196 行在本机 Release Core 上达到 196 TP / 0 FP / 0 FN、CER 0、duplicate line 0，独立 Python planner/merge/stage oracle 与原生候选来源、抑制关系和最终结果对齐；无 token 本地 registry 预检已接入 release workflow，benchmark 已从普通 CI/release preflight 分离为显式按需任务。步骤 8 仍需在确有资格审查需求时运行真实四平台采集、人工 review 与 accepted baseline commit；步骤 9 的公开发布仍是阻断项。
 
 1. **Contract 与 bundle**：实现 schema `1.2` parser/validator、`tiled-v1` normalized profile、capability 和新 bundle identity；先完成 malformed/old-bundle tests。
 2. **Planner 与内部数据结构**：实现 checked axis planner、tile identity、candidate score/source metadata 和全局计数；先让纯单元 test vectors 全绿。

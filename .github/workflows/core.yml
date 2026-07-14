@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_benchmark:
+        description: Run the opt-in tiled performance characterization
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -76,7 +82,7 @@ jobs:
           --warmup 5 --iterations 10
           --report reports/release/${{ matrix.id }}/leak.json
       - name: Tiled lifecycle and latency characterization
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.run_benchmark
         shell: bash
         run: |
           ./build-ci/bin/light_ocr_leak_check${{ matrix.executable_suffix }} \
@@ -148,20 +154,12 @@ jobs:
         run: |
           python tools/bootstrap_dependencies.py --cache-dir .cache/dependencies
           python tools/bootstrap_models.py --cache-dir .cache/models
-      - name: Build the Release probe and benchmark
+      - name: Build the Release probe
         run: |
           cmake -S . -B build-oracle -G Ninja -DCMAKE_BUILD_TYPE=Release -DLIGHT_OCR_DEPENDENCY_CACHE_DIR="$PWD/.cache/dependencies" -DLIGHT_OCR_ORACLE_PYTHON="$(command -v python)" -DLIGHT_OCR_PARITY_LIVE_ORACLE=ON
           cmake --build build-oracle --parallel
       - name: Full stage parity and first-bundle quality baseline
         run: ctest --test-dir build-oracle --output-on-failure -L acceptance
-      - name: Relative performance gate
-        run: >-
-          python oracle/run_benchmark.py
-          --native-benchmark build-oracle/bin/light_ocr_benchmark
-          --bundle models/generated/ppocrv6-small-onnx-20260714.2
-          --fixture corpus/fixtures/generated-hello-123/fixture.json
-          --warmup 5 --iterations 30
-          --report build-oracle/reports/benchmark/linux-x64.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: light-ocr-oracle-reports

@@ -61,4 +61,4 @@
 
 `0.1.0` 的四平台 Core、Node.js 22/24 prebuild、六包确定性制品、public registry、provenance、默认 `createEngine()` 与禁网运行证据已经完成，详见 [npm 0.1.0 发布记录](releases/npm-0.1.0.md)。
 
-当前下一优先级是运行一次 `publish_to_registry=false` 的四平台 release preflight，review 并提交 `contracts/tiled-platform-baselines.json`，然后在同一源码身份上重跑完整门禁并发布到 `next`。完成定义全绿前不发布 0.2.0，也不改变 0.1.0 的公开结论。
+当前下一优先级是运行不含 benchmark 的 `publish_to_registry=false` release preflight，确认四平台 Node 22/24、六包、本地 registry 与禁网 OCR。benchmark 仅在首次基线、性能相关变化、新公开数字或疑似回归时显式运行，不再由 push/PR/release 自动触发。完成定义全绿前不发布 0.2.0，也不改变 0.1.0 的公开结论。
